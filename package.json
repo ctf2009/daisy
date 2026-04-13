@@ -1,0 +1,32 @@
+{
+  "name": "daisy",
+  "version": "1.0.0",
+  "description": "Simple photo sharing for events",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"wrangler dev\" \"npm --prefix src/web run dev\"",
+    "dev:api": "wrangler dev",
+    "dev:web": "npm --prefix src/web run dev",
+    "build": "npm --prefix src/web run build",
+    "deploy": "npm run build && wrangler deploy",
+    "db:migrate": "wrangler d1 execute daisy --file=src/db/schema.sql",
+    "db:migrate:remote": "wrangler d1 execute daisy --remote --file=src/db/schema.sql",
+    "test": "vitest run",
+    "test:web": "npm --prefix src/web run test",
+    "test:all": "vitest run && npm --prefix src/web run test",
+    "load-test": "tsx scripts/load-test.ts",
+    "postinstall": "cd src/web && npm install"
+  },
+  "dependencies": {
+    "hono": "^4.12.12",
+    "jose": "^6.2.2"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260413.1",
+    "concurrently": "^9.2.1",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4",
+    "wrangler": "^4.81.1"
+  }
+}

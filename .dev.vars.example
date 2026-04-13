@@ -1,0 +1,2 @@
+ADMIN_USERS=admin@example.com:changeme
+JWT_SECRET=local-dev-secret-change-in-production
