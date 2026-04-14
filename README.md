@@ -13,7 +13,7 @@ Daisy lets guests at your event upload photos by scanning a QR code or visiting 
 ## How it works
 
 1. **Create an album** — sign in, name your event, optionally set an access code
-2. **Share the link** — print the QR code on tables, or share a vanity URL like `weddingphotos.yourdomain.com`
+2. **Share the link** — print the QR code on tables, or share a vanity URL like `photos.yourdomain.com`
 3. **Guests upload** — they scan the QR, select photos from their camera roll, done
 4. **View your gallery** — all photos in one place, downloadable by you
 
@@ -131,8 +131,8 @@ npm run load-test -- --url https://daisy.yourdomain.com --slug your-album-slug
 
 | Scenario | Guests | Photos | Total uploads | Data | Success | p95 |
 |---|---|---|---|---|---|---|
-| Wedding (realistic) | 60 | 5 | 300 | 152 MB | 100% | 159ms |
-| Wedding (heavy) | 60 | 10 | 600 | 305 MB | 100% | 235ms |
+| Standard event | 60 | 5 | 300 | 152 MB | 100% | 159ms |
+| Heavy event | 60 | 10 | 600 | 305 MB | 100% | 235ms |
 | Double capacity | 120 | 5 | 600 | 305 MB | 100% | 524ms |
 | Stress test | 200 | 10 | 2,000 | 1 GB | 99.95% | 10s |
 
@@ -188,11 +188,11 @@ Then add the subdomain as a route:
 ```toml
 routes = [
   { pattern = "daisy.yourdomain.com/*", zone_name = "yourdomain.com" },
-  { pattern = "weddingphotos.yourdomain.com/*", zone_name = "yourdomain.com" },
+  { pattern = "photos.yourdomain.com/*", zone_name = "yourdomain.com" },
 ]
 ```
 
-Guests visit `weddingphotos.yourdomain.com` and land directly on the upload page.
+Guests visit `photos.yourdomain.com` and land directly on the upload page.
 
 ## Photo format support
 

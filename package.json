@@ -18,6 +18,7 @@
     "postinstall": "cd src/web && npm install"
   },
   "dependencies": {
+    "fflate": "^0.8.2",
     "hono": "^4.12.12",
     "jose": "^6.2.2"
   },

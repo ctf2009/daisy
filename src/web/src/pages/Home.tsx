@@ -177,7 +177,7 @@ export function Home() {
                 type="text"
                 value={albumName}
                 onChange={(e) => setAlbumName(e.target.value)}
-                placeholder="Sarah & Tom's Wedding"
+                placeholder="My Event"
                 required
                 className="input"
               />

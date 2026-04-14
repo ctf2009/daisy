@@ -22,10 +22,19 @@ app.use('*', cors({
 
 app.onError((err, c) => {
   console.error('Worker error:', err.message, err.stack);
-  return c.json({ error: err.message }, 500);
+  let verbose = false;
+
+  try {
+    const host = new URL(c.env.FRONTEND_URL).hostname;
+    verbose = host === 'localhost' || host === '127.0.0.1';
+  } catch {
+    verbose = false;
+  }
+
+  return c.json({ error: verbose ? err.message : 'Internal server error' }, 500);
 });
 
-// Vanity subdomain redirect — e.g. weddingphotos.tomandcasey.com → /a/{slug}
+// Vanity subdomain redirect — e.g. photos.yourdomain.com → /a/{slug}
 app.use('*', async (c, next) => {
   const host = c.req.header('host') || '';
   const slug = c.env.DEFAULT_ALBUM_SLUG;

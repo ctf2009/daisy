@@ -27,8 +27,6 @@ export function Gallery() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
   const [showQR, setShowQR] = useState(false);
-  const [downloading, setDownloading] = useState(false);
-  const [downloadProgress, setDownloadProgress] = useState('');
 
   const uploadUrl = `${window.location.origin}/a/${slug}`;
 
@@ -94,23 +92,15 @@ export function Gallery() {
           {album.uploads.length > 0 && (
             <button
               className="btn btn-primary"
-              disabled={downloading}
               onClick={async () => {
-                setDownloading(true);
-                setDownloadProgress('Preparing...');
                 try {
-                  await api.downloadAlbum(slug!, album.uploads, album.name, (done, total) => {
-                    setDownloadProgress(`${done}/${total} photos`);
-                  });
+                  await api.downloadAlbum(slug!);
                 } catch (err) {
                   alert(err instanceof Error ? err.message : 'Download failed');
-                } finally {
-                  setDownloading(false);
-                  setDownloadProgress('');
                 }
               }}
             >
-              {downloading ? downloadProgress : 'Download All'}
+              Download All
             </button>
           )}
         </div>

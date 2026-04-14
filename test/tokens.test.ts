@@ -15,13 +15,13 @@ describe('generateId', () => {
 
 describe('generateSlug', () => {
   it('creates a slug from a name', () => {
-    const slug = generateSlug('My Wedding');
-    expect(slug).toMatch(/^my-wedding-[a-f0-9]{6}$/);
+    const slug = generateSlug('My Event');
+    expect(slug).toMatch(/^my-event-[a-f0-9]{6}$/);
   });
 
   it('strips special characters', () => {
-    const slug = generateSlug("Sarah & Tom's Day!");
-    expect(slug).toMatch(/^sarah-toms-day-[a-f0-9]{6}$/);
+    const slug = generateSlug("Summer BBQ & Fun!");
+    expect(slug).toMatch(/^summer-bbq-fun-[a-f0-9]{6}$/);
   });
 
   it('collapses multiple spaces and hyphens', () => {

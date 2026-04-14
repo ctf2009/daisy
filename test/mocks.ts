@@ -63,6 +63,7 @@ export function createMockD1(): D1Database {
   const tables: Record<string, Table> = {
     albums: [],
     uploads: [],
+    login_attempts: [],
   };
 
   function runQuery(sql: string, params: unknown[]): { results: Row[]; changes: number } {
@@ -87,6 +88,30 @@ export function createMockD1(): D1Database {
     }
 
     if (trimmed.startsWith('SELECT')) {
+      if (/SELECT\s+A\./i.test(sql) && /UPLOAD_COUNT/i.test(sql)) {
+        const albums = tables.albums || [];
+        const uploads = tables.uploads || [];
+        const ownerEmail = params[0];
+
+        let filteredAlbums = albums.filter((album) => album.owner_email === ownerEmail);
+        if (sql.match(/ORDER BY.*DESC/i)) {
+          filteredAlbums = [...filteredAlbums].reverse();
+        }
+
+        return {
+          results: filteredAlbums.map((album) => ({
+            id: album.id,
+            name: album.name,
+            slug: album.slug,
+            created_at: album.created_at,
+            upload_count: uploads.filter(
+              (upload) => upload.album_id === album.id && typeof upload.file_size === 'number'
+            ).length,
+          })),
+          changes: 0,
+        };
+      }
+
       const tableMatch = sql.match(/FROM (\w+)/i);
       if (!tableMatch) throw new Error(`Bad SELECT: ${sql}`);
       const table = tableMatch[1];
@@ -100,6 +125,11 @@ export function createMockD1(): D1Database {
         filtered = rows.filter(row => {
           let paramIdx = 0;
           return conditions.every(cond => {
+            const notNullMatch = cond.trim().match(/(\w+)\s+IS\s+NOT\s+NULL/i);
+            if (notNullMatch) {
+              return row[notNullMatch[1]] !== null && row[notNullMatch[1]] !== undefined;
+            }
+
             const m = cond.trim().match(/(\w+)\s*=\s*\?/);
             if (m) {
               const val = params[paramIdx++];
@@ -128,8 +158,34 @@ export function createMockD1(): D1Database {
       const tableMatch = sql.match(/UPDATE (\w+)/i);
       if (!tableMatch) throw new Error(`Bad UPDATE: ${sql}`);
       const table = tableMatch[1];
-      // Simple: just return success
-      return { results: [], changes: 1 };
+      const rows = tables[table] || [];
+      const setMatch = sql.match(/SET\s+([\s\S]+?)\s+WHERE/i);
+      const whereMatch = sql.match(/WHERE (\w+)\s*=\s*\?/i);
+      if (!setMatch || !whereMatch) throw new Error(`Bad UPDATE body: ${sql}`);
+
+      const assignments = setMatch[1]
+        .split(',')
+        .map(part => part.trim())
+        .filter(part => !part.includes("datetime('now')"));
+
+      const whereColumn = whereMatch[1];
+      const whereValue = params[assignments.length];
+      let changes = 0;
+
+      for (const row of rows) {
+        if (row[whereColumn] !== whereValue) continue;
+
+        assignments.forEach((assignment, index) => {
+          const match = assignment.match(/^(\w+)\s*=\s*\?$/);
+          if (match) {
+            row[match[1]] = params[index];
+          }
+        });
+        row.updated_at = new Date().toISOString();
+        changes++;
+      }
+
+      return { results: [], changes };
     }
 
     if (trimmed.startsWith('DELETE')) {

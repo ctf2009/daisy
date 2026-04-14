@@ -1,6 +1,8 @@
-import { Hono } from 'hono';
+import { Context, Hono } from 'hono';
+import { Zip, ZipPassThrough } from 'fflate';
 import type { Bindings } from '../types';
 import { requireAuth } from '../middleware/auth';
+import { extractBearerToken, issueDownloadToken, verifyAuthToken, verifyDownloadToken } from '../lib/auth';
 import { generateId, generateSlug } from '../lib/tokens';
 import { isValidImageType } from '../lib/validation';
 
@@ -17,6 +19,40 @@ type Album = {
 };
 
 export const albumRoutes = new Hono<{ Bindings: Bindings; Variables: { userEmail: string } }>();
+
+function toDownloadFilename(albumName: string): string {
+  const safeName = albumName.replace(/[^a-zA-Z0-9_-]/g, '_') || 'album';
+  return `${safeName}_photos.zip`;
+}
+
+function toArchiveEntryName(
+  originalFilename: string | null,
+  fallbackName: string,
+  usedNames: Set<string>
+): string {
+  const safeName = (originalFilename || fallbackName)
+    .replace(/[\\/:*?"<>|]/g, '_')
+    .trim() || fallbackName;
+
+  if (!usedNames.has(safeName)) {
+    usedNames.add(safeName);
+    return safeName;
+  }
+
+  const extIndex = safeName.lastIndexOf('.');
+  const base = extIndex > 0 ? safeName.slice(0, extIndex) : safeName;
+  const suffix = extIndex > 0 ? safeName.slice(extIndex) : '';
+
+  let counter = 2;
+  let candidate = `${base}_${counter}${suffix}`;
+  while (usedNames.has(candidate)) {
+    counter++;
+    candidate = `${base}_${counter}${suffix}`;
+  }
+
+  usedNames.add(candidate);
+  return candidate;
+}
 
 // Create album (requires auth)
 albumRoutes.post('/', requireAuth, async (c) => {
@@ -116,7 +152,154 @@ albumRoutes.get('/:slug/manage', requireAuth, async (c) => {
 
   return c.json({
     ...album,
-    uploads: uploads.results,
+    uploads: uploads.results.filter((upload) => typeof upload.file_size === 'number'),
+  });
+});
+
+async function getDownloadRequesterEmail(
+  c: Context<{ Bindings: Bindings; Variables: { userEmail: string } }>
+): Promise<string | null> {
+  const bearerToken = extractBearerToken(c.req.header('Authorization'));
+  if (bearerToken) {
+    const { email } = await verifyAuthToken(bearerToken, c.env);
+    return email;
+  }
+
+  const downloadToken = c.req.query('token');
+  const slug = c.req.param('slug') || '';
+  if (!downloadToken) {
+    return null;
+  }
+
+  const { email } = await verifyDownloadToken(downloadToken, slug, c.env);
+  return email;
+}
+
+albumRoutes.post('/:slug/download-token', requireAuth, async (c) => {
+  const email = c.get('userEmail') as string;
+  const slug = c.req.param('slug') as string;
+
+  const album = await c.env.DB.prepare(
+    'SELECT id FROM albums WHERE slug = ? AND owner_email = ?'
+  ).bind(slug, email).first<{ id: string }>();
+
+  if (!album) {
+    return c.json({ error: 'Album not found or not owned by you' }, 404);
+  }
+
+  const token = await issueDownloadToken(email, slug, c.env);
+  return c.json({ token });
+});
+
+albumRoutes.get('/:slug/download', async (c) => {
+  let email: string | null = null;
+
+  try {
+    email = await getDownloadRequesterEmail(c);
+  } catch {
+    return c.json({ error: 'Invalid or expired token' }, 401);
+  }
+
+  if (!email) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  const slug = c.req.param('slug');
+
+  const album = await c.env.DB.prepare(
+    'SELECT id, name FROM albums WHERE slug = ? AND owner_email = ?'
+  ).bind(slug, email).first<{ id: string; name: string }>();
+
+  if (!album) {
+    return c.json({ error: 'Album not found or not owned by you' }, 404);
+  }
+
+  const uploads = await c.env.DB.prepare(
+    `SELECT id, original_filename, r2_key
+     FROM uploads
+     WHERE album_id = ? AND file_size IS NOT NULL
+     ORDER BY uploaded_at DESC`
+  ).bind(album.id).all<{ id: string; original_filename: string | null; r2_key: string }>();
+
+  let zip: Zip | undefined;
+  let canceled = false;
+  const usedNames = new Set<string>();
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      zip = new Zip((err, chunk, final) => {
+        if (err) {
+          controller.error(err);
+          return;
+        }
+
+        controller.enqueue(chunk);
+        if (final) {
+          controller.close();
+        }
+      });
+
+      void (async () => {
+        for (const upload of uploads.results) {
+          if (canceled) {
+            break;
+          }
+
+          const object = await c.env.PHOTOS.get(upload.r2_key);
+          if (!object?.body) {
+            continue;
+          }
+
+          const fallbackName = `photo_${upload.id}`;
+          const archiveName = toArchiveEntryName(upload.original_filename, fallbackName, usedNames);
+          const entry = new ZipPassThrough(archiveName);
+          zip.add(entry);
+
+          const reader = object.body.getReader();
+          try {
+            let current = await reader.read();
+
+            if (current.done) {
+              entry.push(new Uint8Array(0), true);
+              continue;
+            }
+
+            while (true) {
+              const next = await reader.read();
+              entry.push(current.value, next.done);
+              if (next.done) {
+                break;
+              }
+              current = next;
+            }
+          } finally {
+            reader.releaseLock();
+          }
+        }
+
+        if (!canceled) {
+          zip.end();
+        }
+      })().catch((err) => {
+        try {
+          zip?.terminate();
+        } finally {
+          controller.error(err);
+        }
+      });
+    },
+    cancel() {
+      canceled = true;
+      zip?.terminate();
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'application/zip',
+      'Content-Disposition': `attachment; filename="${toDownloadFilename(album.name)}"`,
+      'Cache-Control': 'private, no-store',
+    },
   });
 });
 
@@ -125,11 +308,12 @@ albumRoutes.get('/', requireAuth, async (c) => {
   const email = c.get('userEmail');
 
   const albums = await c.env.DB.prepare(
-    `SELECT a.id, a.name, a.slug, a.created_at, COUNT(u.id) as upload_count
+    `SELECT a.id, a.name, a.slug, a.created_at,
+        (SELECT COUNT(*)
+         FROM uploads u
+         WHERE u.album_id = a.id AND u.file_size IS NOT NULL) as upload_count
      FROM albums a
-     LEFT JOIN uploads u ON a.id = u.album_id
      WHERE a.owner_email = ?
-     GROUP BY a.id
      ORDER BY a.created_at DESC`
   ).bind(email).all();
 
@@ -147,24 +331,32 @@ albumRoutes.put('/:slug', requireAuth, async (c) => {
   }>();
 
   const album = await c.env.DB.prepare(
-    'SELECT id FROM albums WHERE slug = ? AND owner_email = ?'
-  ).bind(slug, email).first<{ id: string }>();
+    'SELECT id, name, access_code, welcome_text FROM albums WHERE slug = ? AND owner_email = ?'
+  ).bind(slug, email).first<{ id: string; name: string; access_code: string | null; welcome_text: string | null }>();
 
   if (!album) {
     return c.json({ error: 'Album not found or not owned by you' }, 404);
   }
 
+  const nextName = name !== undefined ? name.trim() : album.name;
+  if (!nextName) {
+    return c.json({ error: 'Album name required' }, 400);
+  }
+
+  const nextAccessCode = access_code !== undefined ? access_code : album.access_code;
+  const nextWelcomeText = welcome_text !== undefined ? welcome_text : album.welcome_text;
+
   await c.env.DB.prepare(
     `UPDATE albums SET
-      name = COALESCE(?, name),
+      name = ?,
       access_code = ?,
       welcome_text = ?,
       updated_at = datetime('now')
      WHERE id = ?`
   ).bind(
-    name || null,
-    access_code !== undefined ? access_code : null,
-    welcome_text !== undefined ? welcome_text : null,
+    nextName,
+    nextAccessCode,
+    nextWelcomeText,
     album.id
   ).run();
 

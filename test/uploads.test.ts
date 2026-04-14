@@ -130,6 +130,59 @@ describe('PUT /api/uploads/:id/file', () => {
     expect(getRes.headers.get('Content-Type')).toBe('image/jpeg');
   });
 
+  it('stores file size and exposes uploaded files in the manage view', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'File Size Test');
+
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'sized.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    const fakeJpeg = new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]);
+    await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: fakeJpeg,
+    });
+
+    const manageRes = await req(`/api/albums/${album.slug}/manage`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = await manageRes.json() as {
+      uploads: Array<{ id: string; file_size: number | null }>;
+    };
+
+    expect(body.uploads).toHaveLength(1);
+    expect(body.uploads[0].id).toBe(upload_id);
+    expect(body.uploads[0].file_size).toBe(fakeJpeg.byteLength);
+  });
+
+  it('deletes incomplete upload slots when the file upload is rejected', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Cleanup Test');
+
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'too-big.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    const uploadRes = await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Content-Length': String(50 * 1024 * 1024 + 1),
+      },
+      body: new Uint8Array([0xFF, 0xD8]),
+    });
+    expect(uploadRes.status).toBe(413);
+
+    const getRes = await req(`/api/uploads/${upload_id}/photo`);
+    expect(getRes.status).toBe(404);
+  });
+
   it('returns 404 for non-existent upload', async () => {
     const res = await req('/api/uploads/fake-id/file', {
       method: 'PUT',
@@ -164,6 +217,27 @@ describe('PUT /api/uploads/:id/thumbnail', () => {
     expect(getRes.status).toBe(200);
     expect(getRes.headers.get('Content-Type')).toBe('image/jpeg');
   });
+
+  it('falls back to the original photo when the thumbnail is missing', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Fallback Test');
+
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'original.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]),
+    });
+
+    const getRes = await req(`/api/uploads/${upload_id}/thumbnail`);
+    expect(getRes.status).toBe(200);
+    expect(getRes.headers.get('Content-Type')).toBe('image/jpeg');
+  });
 });
 
 describe('GET /api/albums/:slug/photos', () => {
@@ -173,13 +247,38 @@ describe('GET /api/albums/:slug/photos', () => {
     const token = await getToken();
     const album = await createAlbum(token, 'List Test');
 
-    await requestUpload(album.slug, { content_type: 'image/jpeg', filename: 'a.jpg' });
-    await requestUpload(album.slug, { content_type: 'image/png', filename: 'b.png' });
+    const firstSlot = await requestUpload(album.slug, { content_type: 'image/jpeg', filename: 'a.jpg' });
+    const secondSlot = await requestUpload(album.slug, { content_type: 'image/png', filename: 'b.png' });
+    const { upload_id: firstUploadId } = await firstSlot.json() as { upload_id: string };
+    const { upload_id: secondUploadId } = await secondSlot.json() as { upload_id: string };
+
+    await req(`/api/uploads/${firstUploadId}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xFF, 0xD8]),
+    });
+    await req(`/api/uploads/${secondUploadId}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/png' },
+      body: new Uint8Array([0x89, 0x50]),
+    });
 
     const res = await req(`/api/albums/${album.slug}/photos`);
     expect(res.status).toBe(200);
     const body = await res.json() as { photos: unknown[] };
     expect(body.photos.length).toBe(2);
+  });
+
+  it('hides upload slots that never finished uploading', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Incomplete Uploads');
+
+    await requestUpload(album.slug, { content_type: 'image/jpeg', filename: 'pending.jpg' });
+
+    const res = await req(`/api/albums/${album.slug}/photos`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as { photos: unknown[] };
+    expect(body.photos).toEqual([]);
   });
 
   it('rejects listing without code on protected album', async () => {

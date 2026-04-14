@@ -28,8 +28,16 @@ describe('getExtFromContentType', () => {
     expect(getExtFromContentType('image/heif')).toBe('heif');
   });
 
+  it('maps additional image types', () => {
+    expect(getExtFromContentType('image/bmp')).toBe('bmp');
+    expect(getExtFromContentType('image/avif')).toBe('avif');
+    expect(getExtFromContentType('image/tiff')).toBe('tiff');
+    expect(getExtFromContentType('image/x-adobe-dng')).toBe('dng');
+    expect(getExtFromContentType('image/dng')).toBe('dng');
+  });
+
   it('defaults to jpg for unknown types', () => {
-    expect(getExtFromContentType('image/bmp')).toBe('jpg');
     expect(getExtFromContentType('application/octet-stream')).toBe('jpg');
+    expect(getExtFromContentType('video/mp4')).toBe('jpg');
   });
 });

@@ -43,6 +43,19 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   return res.json();
 }
 
+async function uploadBinary(path: string, file: Blob, contentType: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: 'PUT',
+    body: file,
+    headers: { 'Content-Type': contentType },
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: 'Upload failed' }));
+    throw new Error(body.error || `HTTP ${res.status}`);
+  }
+}
+
 // Auth
 export const api = {
   login: (email: string, password: string) =>
@@ -117,47 +130,15 @@ export const api = {
       method: 'DELETE',
     }),
 
-  downloadAlbum: async (
-    slug: string,
-    photos: Array<{ id: string; original_filename: string }>,
-    albumName: string,
-    onProgress?: (done: number, total: number) => void,
-  ) => {
-    const { zipSync } = await import('fflate');
+  downloadAlbum: async (slug: string) => {
+    const { token } = await request<{ token: string }>(`/api/albums/${slug}/download-token`, {
+      method: 'POST',
+    });
 
-    const files: Record<string, Uint8Array> = {};
-    const seenNames = new Set<string>();
-
-    for (let i = 0; i < photos.length; i++) {
-      const photo = photos[i];
-      const res = await fetch(`${API_BASE}/api/uploads/${photo.id}/photo`);
-      if (!res.ok) continue;
-
-      const arrayBuf = await res.arrayBuffer();
-
-      let name = photo.original_filename || 'photo.jpg';
-      if (seenNames.has(name)) {
-        const ext = name.lastIndexOf('.');
-        const base = ext > 0 ? name.slice(0, ext) : name;
-        const suffix = ext > 0 ? name.slice(ext) : '';
-        let j = 2;
-        while (seenNames.has(`${base}_${j}${suffix}`)) j++;
-        name = `${base}_${j}${suffix}`;
-      }
-      seenNames.add(name);
-
-      files[name] = new Uint8Array(arrayBuf);
-      onProgress?.(i + 1, photos.length);
-    }
-
-    const zipped = zipSync(files);
-    const blob = new Blob([zipped], { type: 'application/zip' });
-    const url = URL.createObjectURL(blob);
+    const url = `${API_BASE}/api/albums/${slug}/download?${new URLSearchParams({ token })}`;
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${albumName.replace(/[^a-zA-Z0-9_-]/g, '_')}_photos.zip`;
     a.click();
-    URL.revokeObjectURL(url);
   },
 
   // Uploads
@@ -168,18 +149,10 @@ export const api = {
     }),
 
   uploadFile: (uploadId: string, file: Blob, contentType: string) =>
-    fetch(`${API_BASE}/api/uploads/${uploadId}/file`, {
-      method: 'PUT',
-      body: file,
-      headers: { 'Content-Type': contentType },
-    }),
+    uploadBinary(`/api/uploads/${uploadId}/file`, file, contentType),
 
   uploadThumbnail: (uploadId: string, file: Blob) =>
-    fetch(`${API_BASE}/api/uploads/${uploadId}/thumbnail`, {
-      method: 'PUT',
-      body: file,
-      headers: { 'Content-Type': 'image/jpeg' },
-    }),
+    uploadBinary(`/api/uploads/${uploadId}/thumbnail`, file, 'image/jpeg'),
 
   getPhotoUrl: (uploadId: string) =>
     `${API_BASE}/api/uploads/${uploadId}/photo`,

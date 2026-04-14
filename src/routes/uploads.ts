@@ -9,6 +9,22 @@ const MAX_THUMB_SIZE = 500 * 1024;       // 500KB
 
 export const uploadRoutes = new Hono<{ Bindings: Bindings }>();
 
+async function deleteUploadRecord(c: { env: Bindings }, uploadId: string) {
+  const upload = await c.env.DB.prepare(
+    'SELECT r2_key, thumbnail_key FROM uploads WHERE id = ?'
+  ).bind(uploadId).first<{ r2_key: string; thumbnail_key: string }>();
+
+  if (!upload) {
+    return;
+  }
+
+  await Promise.all([
+    c.env.PHOTOS.delete(upload.r2_key),
+    c.env.PHOTOS.delete(upload.thumbnail_key),
+    c.env.DB.prepare('DELETE FROM uploads WHERE id = ?').bind(uploadId).run(),
+  ]);
+}
+
 // Request upload URL (guest-facing, validates access code if needed)
 uploadRoutes.post('/albums/:slug/upload', async (c) => {
   const slug = c.req.param('slug');
@@ -70,23 +86,35 @@ uploadRoutes.put('/uploads/:uploadId/file', async (c) => {
 
   const contentLength = parseInt(c.req.header('Content-Length') || '0');
   if (contentLength > MAX_PHOTO_SIZE) {
+    await deleteUploadRecord(c, uploadId);
     return c.json({ error: `File too large. Max ${MAX_PHOTO_SIZE / 1024 / 1024}MB` }, 413);
   }
 
   const body = c.req.raw.body;
   if (!body) {
+    await deleteUploadRecord(c, uploadId);
     return c.json({ error: 'No file body' }, 400);
   }
 
   // Read and verify actual size
   const arrayBuf = await c.req.arrayBuffer();
   if (arrayBuf.byteLength > MAX_PHOTO_SIZE) {
+    await deleteUploadRecord(c, uploadId);
     return c.json({ error: `File too large. Max ${MAX_PHOTO_SIZE / 1024 / 1024}MB` }, 413);
   }
 
-  await c.env.PHOTOS.put(upload.r2_key, arrayBuf, {
-    httpMetadata: { contentType: upload.content_type },
-  });
+  try {
+    await c.env.PHOTOS.put(upload.r2_key, arrayBuf, {
+      httpMetadata: { contentType: upload.content_type },
+    });
+
+    await c.env.DB.prepare(
+      'UPDATE uploads SET file_size = ? WHERE id = ?'
+    ).bind(arrayBuf.byteLength, uploadId).run();
+  } catch (err) {
+    await deleteUploadRecord(c, uploadId);
+    throw err;
+  }
 
   return c.json({ ok: true });
 });
@@ -96,8 +124,8 @@ uploadRoutes.put('/uploads/:uploadId/thumbnail', async (c) => {
   const uploadId = c.req.param('uploadId');
 
   const upload = await c.env.DB.prepare(
-    'SELECT thumbnail_key FROM uploads WHERE id = ?'
-  ).bind(uploadId).first<{ thumbnail_key: string }>();
+    'SELECT thumbnail_key, r2_key FROM uploads WHERE id = ?'
+  ).bind(uploadId).first<{ thumbnail_key: string; r2_key: string }>();
 
   if (!upload) {
     return c.json({ error: 'Upload not found' }, 404);
@@ -155,21 +183,31 @@ uploadRoutes.get('/uploads/:uploadId/thumbnail', async (c) => {
   const uploadId = c.req.param('uploadId');
 
   const upload = await c.env.DB.prepare(
-    'SELECT thumbnail_key FROM uploads WHERE id = ?'
-  ).bind(uploadId).first<{ thumbnail_key: string }>();
+    'SELECT thumbnail_key, r2_key FROM uploads WHERE id = ?'
+  ).bind(uploadId).first<{ thumbnail_key: string; r2_key: string }>();
 
   if (!upload) {
     return c.json({ error: 'Not found' }, 404);
   }
 
   const obj = await c.env.PHOTOS.get(upload.thumbnail_key);
-  if (!obj) {
+  if (obj) {
+    return new Response(obj.body, {
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Cache-Control': 'public, max-age=86400',
+      },
+    });
+  }
+
+  const original = await c.env.PHOTOS.get(upload.r2_key);
+  if (!original) {
     return c.json({ error: 'File not found' }, 404);
   }
 
-  return new Response(obj.body, {
+  return new Response(original.body, {
     headers: {
-      'Content-Type': 'image/jpeg',
+      'Content-Type': original.httpMetadata?.contentType || 'image/jpeg',
       'Cache-Control': 'public, max-age=86400',
     },
   });
@@ -193,8 +231,12 @@ uploadRoutes.get('/albums/:slug/photos', async (c) => {
   }
 
   const uploads = await c.env.DB.prepare(
-    'SELECT id, original_filename, content_type, uploaded_at FROM uploads WHERE album_id = ? ORDER BY uploaded_at DESC'
+    'SELECT id, original_filename, content_type, file_size, uploaded_at FROM uploads WHERE album_id = ? ORDER BY uploaded_at DESC'
   ).bind(album.id).all();
 
-  return c.json({ photos: uploads.results });
+  return c.json({
+    photos: uploads.results
+      .filter((upload) => typeof upload.file_size === 'number')
+      .map(({ file_size, ...upload }) => upload),
+  });
 });

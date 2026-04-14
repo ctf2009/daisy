@@ -65,6 +65,30 @@ describe('POST /api/auth/login', () => {
     const res = await login('admin@test.com', 'secret');
     expect(res.status).toBe(200);
   });
+
+  it('rate limits repeated failed attempts from the same IP', async () => {
+    for (let i = 0; i < 5; i++) {
+      const res = await req('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': '203.0.113.10',
+        },
+        body: JSON.stringify({ email: 'test@example.com', password: 'wrong' }),
+      });
+      expect(res.status).toBe(401);
+    }
+
+    const lockedRes = await req('/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Forwarded-For': '203.0.113.10',
+      },
+      body: JSON.stringify({ email: 'test@example.com', password: 'wrong' }),
+    });
+    expect(lockedRes.status).toBe(429);
+  });
 });
 
 describe('GET /api/auth/me', () => {

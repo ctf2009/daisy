@@ -1,5 +1,5 @@
 /**
- * Daisy Load Test — simulates concurrent wedding guests uploading photos.
+ * Daisy Load Test — simulates concurrent guests uploading photos.
  *
  * Usage:
  *   npx tsx scripts/load-test.ts [options]
