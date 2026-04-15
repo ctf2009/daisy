@@ -3,6 +3,7 @@ CREATE TABLE IF NOT EXISTS albums (
   name TEXT NOT NULL,
   slug TEXT UNIQUE NOT NULL,
   access_code TEXT,
+  is_open INTEGER NOT NULL DEFAULT 1,
   welcome_text TEXT,
   background_key TEXT,
   owner_email TEXT NOT NULL,

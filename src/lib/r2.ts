@@ -1,9 +1,9 @@
-export function getPhotoKey(albumId: string, uploadId: string, ext: string): string {
-  return `${albumId}/${uploadId}.${ext}`;
+export function getPhotoKey(albumSlug: string, uploadId: string, ext: string): string {
+  return `${albumSlug}/${uploadId}.${ext}`;
 }
 
-export function getThumbnailKey(albumId: string, uploadId: string): string {
-  return `${albumId}/thumbs/${uploadId}.jpg`;
+export function getThumbnailKey(albumSlug: string, uploadId: string): string {
+  return `${albumSlug}/thumbs/${uploadId}.jpg`;
 }
 
 export function getExtFromContentType(contentType: string): string {

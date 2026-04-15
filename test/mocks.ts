@@ -79,6 +79,7 @@ export function createMockD1(): D1Database {
       const row: Row = {};
       cols.forEach((col, i) => { row[col] = params[i]; });
       // Set defaults
+      if (row.is_open === undefined && table === 'albums') row.is_open = 1;
       if (!row.created_at) row.created_at = new Date().toISOString();
       if (!row.updated_at) row.updated_at = new Date().toISOString();
       if (!row.uploaded_at) row.uploaded_at = new Date().toISOString();

@@ -101,6 +101,34 @@ JWT_SECRET=local-dev-secret-change-in-production
 | `npm run test:web` | Run frontend tests |
 | `npm run test:all` | Run all tests |
 
+## Managing R2 storage
+
+Use [rclone](https://rclone.org/) to manage photos in R2 from the command line. One-time setup:
+
+1. Go to **CF Dashboard** > **R2 Object Storage** > **Manage R2 API Tokens** > **Create API Token**
+2. Give it read/write access, note the **Access Key ID** and **Secret Access Key**
+3. Configure rclone:
+
+```bash
+rclone config create r2 s3 provider Cloudflare \
+  access_key_id YOUR_ACCESS_KEY \
+  secret_access_key YOUR_SECRET_KEY \
+  endpoint https://YOUR_ACCOUNT_ID.r2.cloudflarestorage.com
+```
+
+Then:
+
+| Command | Description |
+|---|---|
+| `rclone ls r2:daisy-photos` | List all objects |
+| `rclone delete r2:daisy-photos` | Delete all objects |
+| `rclone ls r2:daisy-photos --include "my-event-*/**"` | List one album's photos |
+| `rclone delete r2:daisy-photos --include "my-event-*/**"` | Delete one album's photos |
+| `rclone copy r2:daisy-photos ./download` | Download everything locally |
+| `rclone copy r2:daisy-photos ./download --include "my-event-*/**"` | Download one album |
+
+Photos are stored as `{album-slug}/{upload-id}.{ext}` with thumbnails in `{album-slug}/thumbs/`.
+
 ## Load testing
 
 Daisy ships with a load test harness that simulates concurrent guests uploading photos. Run it against local or production to prove the system holds up under pressure.

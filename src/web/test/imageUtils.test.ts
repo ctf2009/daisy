@@ -1,21 +1,35 @@
-import { describe, it, expect } from 'vitest';
-
-// Test the thumbnail generation logic without actually loading images
-// (jsdom doesn't support canvas/Image fully, so we test the pure logic)
+import { describe, expect, it } from 'vitest';
+import { getSupportedImageMimeType, isLikelySupportedImage } from '../src/lib/imageUtils';
 
 describe('imageUtils', () => {
-  describe('HEIC detection logic', () => {
-    it('detects HEIC by mime type', () => {
-      const isHeic = (file: { type: string; name: string }) =>
-        file.type === 'image/heic' || file.type === 'image/heif' ||
-        file.name.toLowerCase().endsWith('.heic') || file.name.toLowerCase().endsWith('.heif');
+  describe('supported image detection', () => {
+    it('normalizes common browser MIME variants', () => {
+      expect(getSupportedImageMimeType({ type: 'image/jpg', name: 'photo.jpg' } as File)).toBe(
+        'image/jpeg'
+      );
+      expect(getSupportedImageMimeType({ type: 'image/x-png', name: 'photo.png' } as File)).toBe(
+        'image/png'
+      );
+      expect(
+        getSupportedImageMimeType({ type: 'image/x-ms-bmp', name: 'scan.bmp' } as File)
+      ).toBe('image/bmp');
+    });
 
-      expect(isHeic({ type: 'image/heic', name: 'photo.heic' })).toBe(true);
-      expect(isHeic({ type: 'image/heif', name: 'photo.heif' })).toBe(true);
-      expect(isHeic({ type: '', name: 'photo.HEIC' })).toBe(true);
-      expect(isHeic({ type: '', name: 'photo.HEIF' })).toBe(true);
-      expect(isHeic({ type: 'image/jpeg', name: 'photo.jpg' })).toBe(false);
-      expect(isHeic({ type: 'image/png', name: 'photo.png' })).toBe(false);
+    it('falls back to file extension when Safari provides no MIME type', () => {
+      expect(getSupportedImageMimeType({ type: '', name: 'IMG_0001.JPG' } as File)).toBe(
+        'image/jpeg'
+      );
+      expect(getSupportedImageMimeType({ type: '', name: 'IMG_0002.HEIC' } as File)).toBe(
+        'image/heic'
+      );
+      expect(isLikelySupportedImage({ type: '', name: 'holiday.png' } as File)).toBe(true);
+    });
+
+    it('rejects unsupported files', () => {
+      expect(isLikelySupportedImage({ type: 'application/pdf', name: 'notes.pdf' } as File)).toBe(
+        false
+      );
+      expect(getSupportedImageMimeType({ type: '', name: 'archive.zip' } as File)).toBeNull();
     });
   });
 
@@ -26,12 +40,11 @@ describe('imageUtils', () => {
           height = (height * maxSize) / width;
           width = maxSize;
         }
-      } else {
-        if (height > maxSize) {
-          width = (width * maxSize) / height;
-          height = maxSize;
-        }
+      } else if (height > maxSize) {
+        width = (width * maxSize) / height;
+        height = maxSize;
       }
+
       return { width, height };
     }
 

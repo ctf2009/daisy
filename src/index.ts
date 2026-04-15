@@ -52,4 +52,14 @@ app.route('/api/auth', authRoutes);
 app.route('/api/albums', albumRoutes);
 app.route('/api', uploadRoutes);
 
+// For non-API routes, return undefined so CF Workers asset handler serves the SPA
+app.all('*', (c) => {
+  // Let the asset binding handle it
+  const assets = (c.env as Record<string, unknown>).ASSETS as { fetch: typeof fetch } | undefined;
+  if (assets) {
+    return assets.fetch(c.req.raw);
+  }
+  return c.notFound();
+});
+
 export default app;

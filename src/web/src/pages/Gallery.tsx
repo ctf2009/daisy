@@ -1,5 +1,5 @@
 import { useEffect, useState, lazy, Suspense } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api, isLoggedIn, clearToken } from '../lib/api';
 import { PhotoGrid } from '../components/PhotoGrid';
 
@@ -17,6 +17,7 @@ type AlbumData = {
   name: string;
   slug: string;
   access_code: string | null;
+  is_open: number;
   welcome_text: string | null;
   uploads: Photo[];
 };
@@ -78,14 +79,35 @@ export function Gallery() {
     return <div className="page-center"><p className="error">{error || 'Album not found'}</p></div>;
   }
 
+  const handleToggleOpen = async () => {
+    if (!slug) return;
+    const newState = !album.is_open;
+    try {
+      await api.updateAlbum(slug, { is_open: newState });
+      setAlbum((prev) => prev ? { ...prev, is_open: newState ? 1 : 0 } : null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to update');
+    }
+  };
+
   return (
     <div className="gallery-page">
+      <Link to="/" className="back-link">&larr; Albums</Link>
       <div className="gallery-header">
         <div>
           <h1>{album.name}</h1>
-          <p className="photo-count">{album.uploads.length} photos</p>
+          <p className="photo-count">
+            {album.uploads.length} photo{album.uploads.length !== 1 ? 's' : ''}
+            {' '}&middot;{' '}
+            <span className={album.is_open ? 'status-open' : 'status-closed'}>
+              {album.is_open ? 'Open' : 'Closed'}
+            </span>
+          </p>
         </div>
         <div className="gallery-actions">
+          <button className="btn btn-secondary" onClick={handleToggleOpen}>
+            {album.is_open ? 'Close album' : 'Open album'}
+          </button>
           <button className="btn btn-secondary" onClick={() => setShowQR(!showQR)}>
             {showQR ? 'Hide QR' : 'Show QR Code'}
           </button>

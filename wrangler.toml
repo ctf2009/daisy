@@ -15,7 +15,7 @@ not_found_handling = "single-page-application"
 run_worker_first = true
 
 [vars]
-FRONTEND_URL = "https://daisy.yourdomain.com"
+FRONTEND_URL = "https://daisy-api.chrisflaherty.workers.dev"
 DEFAULT_ALBUM_SLUG = ""
 
 # ADMIN_USERS, JWT_SECRET, and DEFAULT_ALBUM_SLUG are set via `wrangler secret put` for production.
@@ -24,7 +24,7 @@ DEFAULT_ALBUM_SLUG = ""
 [[d1_databases]]
 binding = "DB"
 database_name = "daisy"
-database_id = "YOUR_D1_DATABASE_ID"
+database_id = "349c417d-edbb-45a7-80bb-2678a8b5c08b"
 
 [[r2_buckets]]
 binding = "PHOTOS"

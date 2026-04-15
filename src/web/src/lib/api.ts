@@ -80,6 +80,7 @@ export const api = {
       slug: string;
       welcome_text: string | null;
       background_url: string | null;
+      is_open: boolean;
       requires_code: boolean;
     }>(`/api/albums/${slug}`),
 
@@ -89,6 +90,7 @@ export const api = {
       name: string;
       slug: string;
       access_code: string | null;
+      is_open: number;
       welcome_text: string | null;
       uploads: Array<{
         id: string;
@@ -110,7 +112,7 @@ export const api = {
       }>;
     }>('/api/albums'),
 
-  updateAlbum: (slug: string, data: { name?: string; access_code?: string | null; welcome_text?: string | null }) =>
+  updateAlbum: (slug: string, data: { name?: string; access_code?: string | null; welcome_text?: string | null; is_open?: boolean }) =>
     request<{ ok: true }>(`/api/albums/${slug}`, {
       method: 'PUT',
       body: JSON.stringify(data),

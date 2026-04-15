@@ -43,11 +43,15 @@ uploadRoutes.post('/albums/:slug/upload', async (c) => {
   }
 
   const album = await c.env.DB.prepare(
-    'SELECT id, access_code FROM albums WHERE slug = ?'
-  ).bind(slug).first<{ id: string; access_code: string | null }>();
+    'SELECT id, access_code, is_open FROM albums WHERE slug = ?'
+  ).bind(slug).first<{ id: string; access_code: string | null; is_open: number }>();
 
   if (!album) {
     return c.json({ error: 'Album not found' }, 404);
+  }
+
+  if (!album.is_open) {
+    return c.json({ error: 'This album is no longer accepting photos' }, 403);
   }
 
   if (!validateAccessCode(album.access_code, access_code)) {
@@ -57,8 +61,8 @@ uploadRoutes.post('/albums/:slug/upload', async (c) => {
   const safeName = sanitizeFilename(filename);
   const uploadId = generateId();
   const ext = getExtFromContentType(content_type);
-  const r2Key = getPhotoKey(album.id, uploadId, ext);
-  const thumbnailKey = getThumbnailKey(album.id, uploadId);
+  const r2Key = getPhotoKey(slug, uploadId, ext);
+  const thumbnailKey = getThumbnailKey(slug, uploadId);
 
   await c.env.DB.prepare(
     `INSERT INTO uploads (id, album_id, r2_key, thumbnail_key, original_filename, content_type)

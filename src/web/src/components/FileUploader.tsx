@@ -1,6 +1,12 @@
-import { useState, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
-import { convertToJpeg, generateThumbnail } from '../lib/imageUtils';
+import {
+  convertToJpeg,
+  ensureFileReady,
+  generateThumbnail,
+  getSupportedImageMimeType,
+  isLikelySupportedImage,
+} from '../lib/imageUtils';
 
 type UploadItem = {
   id: string;
@@ -16,10 +22,30 @@ type Props = {
   onUploadComplete?: () => void;
 };
 
+const UNSUPPORTED_IMAGE_MESSAGE =
+  'This item is not a supported photo. Please choose JPEG, PNG, HEIC, WebP, GIF, AVIF, BMP, TIFF, or DNG files.';
+
+function normalizeImageFile(file: File): File {
+  const mimeType = getSupportedImageMimeType(file);
+  if (!mimeType) {
+    throw new Error(UNSUPPORTED_IMAGE_MESSAGE);
+  }
+
+  if (file.type === mimeType) {
+    return file;
+  }
+
+  return new File([file], file.name, {
+    type: mimeType,
+    lastModified: file.lastModified,
+  });
+}
+
 export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   const updateItem = (id: string, updates: Partial<UploadItem>) => {
     setUploads((prev) =>
@@ -29,26 +55,25 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
 
   const processFile = async (item: UploadItem) => {
     try {
-      // Convert HEIC if needed
       updateItem(item.id, { status: 'converting' });
-      const converted = await convertToJpeg(item.file);
+      await ensureFileReady(item.file);
+      const normalizedOriginal = normalizeImageFile(item.file);
 
-      // Generate thumbnail
-      const thumbnail = await generateThumbnail(converted);
+      const converted = await convertToJpeg(normalizedOriginal);
+      const uploadFile = normalizeImageFile(converted);
 
-      // Request upload slot
+      const thumbnail = await generateThumbnail(uploadFile);
+
       updateItem(item.id, { status: 'uploading', progress: 10 });
       const { upload_id } = await api.requestUpload(slug, {
-        content_type: converted.type,
-        filename: converted.name,
+        content_type: uploadFile.type,
+        filename: uploadFile.name,
         access_code: accessCode,
       });
 
-      // Upload file
       updateItem(item.id, { progress: 30 });
-      await api.uploadFile(upload_id, converted, converted.type);
+      await api.uploadFile(upload_id, uploadFile, uploadFile.type);
 
-      // Upload thumbnail
       updateItem(item.id, { progress: 80 });
       await api.uploadThumbnail(upload_id, thumbnail);
 
@@ -62,13 +87,27 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
   };
 
   const handleFiles = async (files: FileList | File[]) => {
-    const imageExtensions = ['.heic', '.heif', '.dng', '.tiff', '.tif', '.avif', '.bmp'];
-    const fileArray = Array.from(files).filter((f) =>
-      f.type.startsWith('image/') ||
-      imageExtensions.some(ext => f.name.toLowerCase().endsWith(ext))
-    );
+    const selectedFiles = Array.from(files);
+    const fileArray = selectedFiles.filter((file) => isLikelySupportedImage(file));
+    const skippedCount = selectedFiles.length - fileArray.length;
+
+    if (skippedCount > 0) {
+      setSelectionNotice(
+        skippedCount === 1
+          ? '1 selected item was skipped because Safari did not provide a supported image file.'
+          : `${skippedCount} selected items were skipped because Safari did not provide supported image files.`
+      );
+    } else {
+      setSelectionNotice(null);
+    }
 
     if (fileArray.length === 0) return;
+
+    const MAX_BATCH = 15;
+    if (fileArray.length > MAX_BATCH) {
+      alert(`Please select up to ${MAX_BATCH} photos at a time.`);
+      return;
+    }
 
     const newItems: UploadItem[] = fileArray.map((file) => ({
       id: crypto.randomUUID(),
@@ -97,10 +136,32 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
     onUploadComplete?.();
   };
 
+  const handleInputChange = (input: HTMLInputElement) => {
+    if (input.files?.length) {
+      void handleFiles(input.files);
+    }
+    input.value = '';
+  };
+
+  useEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+
+    const handleNativeSelection = () => handleInputChange(input);
+
+    input.addEventListener('change', handleNativeSelection);
+    input.addEventListener('input', handleNativeSelection);
+
+    return () => {
+      input.removeEventListener('change', handleNativeSelection);
+      input.removeEventListener('input', handleNativeSelection);
+    };
+  }, []);
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    handleFiles(e.dataTransfer.files);
+    void handleFiles(e.dataTransfer.files);
   };
 
   const completedCount = uploads.filter((u) => u.status === 'done').length;
@@ -113,22 +174,24 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
         onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
         onDragLeave={() => setIsDragging(false)}
         onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
       >
         <div className="drop-zone-content">
           <span className="drop-icon">📷</span>
-          <p>Tap to select photos or drag & drop</p>
-          <p className="drop-hint">Supports JPEG, PNG, HEIC, WebP, AVIF, TIFF, DNG</p>
+          <p>Tap to select photos</p>
+          <p className="drop-hint">Supports JPEG, PNG, HEIC, WebP and more</p>
         </div>
         <input
-          ref={fileInputRef}
+          ref={inputRef}
           type="file"
-          accept="image/*,.heic,.heif,.dng,.tiff,.tif"
+          accept="image/*"
           multiple
-          onChange={(e) => e.target.files && handleFiles(e.target.files)}
-          style={{ display: 'none' }}
+          aria-label="Select photos to upload"
+          onChange={(e) => handleInputChange(e.currentTarget)}
+          className="file-input-overlay"
         />
       </div>
+
+      {selectionNotice && <p className="drop-hint">{selectionNotice}</p>}
 
       {uploads.length > 0 && (
         <div className="upload-list">
@@ -139,7 +202,7 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
             <div key={item.id} className={`upload-item ${item.status}`}>
               <span className="upload-name">{item.file.name}</span>
               <div className="upload-status">
-                {item.status === 'converting' && <span>Converting...</span>}
+                {item.status === 'converting' && <span>Processing...</span>}
                 {item.status === 'uploading' && (
                   <div className="progress-bar">
                     <div

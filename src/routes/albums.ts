@@ -11,6 +11,7 @@ type Album = {
   name: string;
   slug: string;
   access_code: string | null;
+  is_open: number;
   welcome_text: string | null;
   background_key: string | null;
   owner_email: string;
@@ -82,7 +83,7 @@ albumRoutes.post('/', requireAuth, async (c) => {
 albumRoutes.get('/:slug', async (c) => {
   const slug = c.req.param('slug');
   const album = await c.env.DB.prepare(
-    'SELECT id, name, slug, welcome_text, background_key, access_code FROM albums WHERE slug = ?'
+    'SELECT id, name, slug, is_open, welcome_text, background_key, access_code FROM albums WHERE slug = ?'
   ).bind(slug).first<Album>();
 
   if (!album) {
@@ -104,6 +105,7 @@ albumRoutes.get('/:slug', async (c) => {
     slug: album.slug,
     welcome_text: album.welcome_text,
     background_url: backgroundUrl,
+    is_open: !!album.is_open,
     requires_code: !!album.access_code,
   }, 200, {
     'Cache-Control': 'public, max-age=300',
@@ -324,15 +326,16 @@ albumRoutes.get('/', requireAuth, async (c) => {
 albumRoutes.put('/:slug', requireAuth, async (c) => {
   const email = c.get('userEmail');
   const slug = c.req.param('slug');
-  const { name, access_code, welcome_text } = await c.req.json<{
+  const { name, access_code, welcome_text, is_open } = await c.req.json<{
     name?: string;
     access_code?: string | null;
     welcome_text?: string | null;
+    is_open?: boolean;
   }>();
 
   const album = await c.env.DB.prepare(
-    'SELECT id, name, access_code, welcome_text FROM albums WHERE slug = ? AND owner_email = ?'
-  ).bind(slug, email).first<{ id: string; name: string; access_code: string | null; welcome_text: string | null }>();
+    'SELECT id, name, access_code, is_open, welcome_text FROM albums WHERE slug = ? AND owner_email = ?'
+  ).bind(slug, email).first<{ id: string; name: string; access_code: string | null; is_open: number; welcome_text: string | null }>();
 
   if (!album) {
     return c.json({ error: 'Album not found or not owned by you' }, 404);
@@ -345,17 +348,20 @@ albumRoutes.put('/:slug', requireAuth, async (c) => {
 
   const nextAccessCode = access_code !== undefined ? access_code : album.access_code;
   const nextWelcomeText = welcome_text !== undefined ? welcome_text : album.welcome_text;
+  const nextIsOpen = is_open !== undefined ? (is_open ? 1 : 0) : album.is_open;
 
   await c.env.DB.prepare(
     `UPDATE albums SET
       name = ?,
       access_code = ?,
+      is_open = ?,
       welcome_text = ?,
       updated_at = datetime('now')
      WHERE id = ?`
   ).bind(
     nextName,
     nextAccessCode,
+    nextIsOpen,
     nextWelcomeText,
     album.id
   ).run();
@@ -391,7 +397,7 @@ albumRoutes.post('/:slug/background', requireAuth, async (c) => {
     await c.env.PHOTOS.delete(album.background_key);
   }
 
-  const key = `${album.id}/background/${generateId()}.${file.name.split('.').pop() || 'jpg'}`;
+  const key = `${slug}/background/${generateId()}.${file.name.split('.').pop() || 'jpg'}`;
   await c.env.PHOTOS.put(key, file.stream(), {
     httpMetadata: { contentType: file.type },
   });
