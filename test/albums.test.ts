@@ -46,6 +46,30 @@ async function requestDownloadToken(slug: string, token: string) {
   });
 }
 
+async function requestSelectedDownloadToken(
+  slug: string,
+  ids: string[],
+  assetToken?: string,
+  authToken?: string
+) {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+
+  if (authToken) {
+    headers.Authorization = `Bearer ${authToken}`;
+  }
+
+  return req(`/api/albums/${slug}/selected-download-token`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      ids,
+      ...(assetToken ? { asset_token: assetToken } : {}),
+    }),
+  });
+}
+
 describe('POST /api/albums', () => {
   beforeEach(() => { bindings = createTestBindings(); });
 
@@ -318,5 +342,109 @@ describe('GET /api/albums/:slug/download', () => {
 
     const res = await req(`/api/albums/${slug}/download?token=${encodeURIComponent(token)}`);
     expect(res.status).toBe(401);
+  });
+});
+
+describe('GET /api/albums/:slug/selected-download', () => {
+  beforeEach(() => { bindings = createTestBindings(); });
+
+  it('streams only the selected photos for an authorized public viewer', async () => {
+    const token = await getToken();
+    const createRes = await createAlbum(token, { name: 'Selected Download Test' });
+    const { slug } = await createRes.json() as { slug: string };
+
+    await req(`/api/albums/${slug}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ is_viewable: true }),
+    });
+
+    const firstSlot = await requestUpload(slug, {
+      content_type: 'image/jpeg',
+      filename: 'first.jpg',
+    });
+    const secondSlot = await requestUpload(slug, {
+      content_type: 'image/jpeg',
+      filename: 'second.jpg',
+    });
+    const { upload_id: firstUploadId } = await firstSlot.json() as { upload_id: string };
+    const { upload_id: secondUploadId } = await secondSlot.json() as { upload_id: string };
+
+    await req(`/api/uploads/${firstUploadId}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([1, 2, 3]),
+    });
+    await req(`/api/uploads/${secondUploadId}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([4, 5, 6]),
+    });
+
+    const photosRes = await req(`/api/albums/${slug}/photos`);
+    const photosBody = await photosRes.json() as { asset_token: string };
+
+    const selectedTokenRes = await requestSelectedDownloadToken(
+      slug,
+      [secondUploadId],
+      photosBody.asset_token
+    );
+    expect(selectedTokenRes.status).toBe(200);
+
+    const { token: selectedDownloadToken } = await selectedTokenRes.json() as { token: string };
+    const res = await req(
+      `/api/albums/${slug}/selected-download?token=${encodeURIComponent(selectedDownloadToken)}`
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Content-Type')).toBe('application/zip');
+
+    const archive = unzipSync(new Uint8Array(await res.arrayBuffer()));
+    expect(Object.keys(archive)).toEqual(['second.jpg']);
+    expect(Array.from(archive['second.jpg'])).toEqual([4, 5, 6]);
+  });
+
+  it('falls back to the public asset token when bearer auth is present but unusable', async () => {
+    const ownerToken = await getToken();
+    const createRes = await createAlbum(ownerToken, { name: 'Fallback Auth Test' });
+    const { slug } = await createRes.json() as { slug: string };
+
+    await req(`/api/albums/${slug}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerToken}`,
+      },
+      body: JSON.stringify({ is_viewable: true }),
+    });
+
+    const slot = await requestUpload(slug, {
+      content_type: 'image/jpeg',
+      filename: 'public.jpg',
+    });
+    const { upload_id } = await slot.json() as { upload_id: string };
+
+    await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([7, 8, 9]),
+    });
+
+    const photosRes = await req(`/api/albums/${slug}/photos`);
+    const photosBody = await photosRes.json() as { asset_token: string };
+
+    const nonOwnerAuthToken = 'not-a-real-owner-token';
+    const selectedTokenRes = await requestSelectedDownloadToken(
+      slug,
+      [upload_id],
+      photosBody.asset_token,
+      nonOwnerAuthToken
+    );
+
+    expect(selectedTokenRes.status).toBe(200);
+    const body = await selectedTokenRes.json() as { token: string };
+    expect(body.token).toBeTruthy();
   });
 });

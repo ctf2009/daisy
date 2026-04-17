@@ -228,3 +228,23 @@ function generatePlaceholderThumbnail(filename: string, size: number): Promise<B
     );
   });
 }
+
+/**
+ * Generates a content hash for duplicate detection.
+ * Hashes the first 64KB + file size for speed.
+ */
+export async function generateContentHash(file: File): Promise<string> {
+  const CHUNK_SIZE = 64 * 1024;
+  const slice = file.slice(0, Math.min(CHUNK_SIZE, file.size));
+  const chunk = await slice.arrayBuffer();
+
+  // Combine chunk bytes with file size as a simple fingerprint
+  const sizeBytes = new TextEncoder().encode(`|size:${file.size}`);
+  const combined = new Uint8Array(chunk.byteLength + sizeBytes.byteLength);
+  combined.set(new Uint8Array(chunk), 0);
+  combined.set(sizeBytes, chunk.byteLength);
+
+  const hashBuffer = await crypto.subtle.digest('SHA-256', combined);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+}

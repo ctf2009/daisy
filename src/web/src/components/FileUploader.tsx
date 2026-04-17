@@ -3,10 +3,12 @@ import { api } from '../lib/api';
 import {
   convertToJpeg,
   ensureFileReady,
+  generateContentHash,
   generateThumbnail,
   getSupportedImageMimeType,
   isLikelySupportedImage,
 } from '../lib/imageUtils';
+import { uploadFileMultipart } from '../lib/uppyUpload';
 
 type UploadItem = {
   id: string;
@@ -59,23 +61,38 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
       await ensureFileReady(item.file);
       const normalizedOriginal = normalizeImageFile(item.file);
 
+      // Generate content hash for duplicate detection
+      const contentHash = await generateContentHash(normalizedOriginal);
+
       const converted = await convertToJpeg(normalizedOriginal);
       const uploadFile = normalizeImageFile(converted);
 
       const thumbnail = await generateThumbnail(uploadFile);
 
       updateItem(item.id, { status: 'uploading', progress: 10 });
-      const { upload_id } = await api.requestUpload(slug, {
+      const result = await api.requestUpload(slug, {
         content_type: uploadFile.type,
         filename: uploadFile.name,
         access_code: accessCode,
+        content_hash: contentHash,
       });
 
-      updateItem(item.id, { progress: 30 });
-      await api.uploadFile(upload_id, uploadFile, uploadFile.type);
+      if (result.duplicate) {
+        updateItem(item.id, { status: 'done', progress: 100, error: 'Already uploaded' });
+        return;
+      }
 
-      updateItem(item.id, { progress: 80 });
-      await api.uploadThumbnail(upload_id, thumbnail);
+      // Multipart upload via Uppy (chunked, with retries)
+      await uploadFileMultipart(
+        result.upload_id!,
+        result.multipart_upload_id!,
+        result.r2_key!,
+        uploadFile,
+        (progress) => updateItem(item.id, { progress: Math.round(progress * 0.85) }),
+      );
+
+      updateItem(item.id, { progress: 90 });
+      await api.uploadThumbnail(result.upload_id!, thumbnail);
 
       updateItem(item.id, { status: 'done', progress: 100 });
     } catch (err) {
@@ -211,7 +228,8 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
                     />
                   </div>
                 )}
-                {item.status === 'done' && <span className="check">✓</span>}
+                {item.status === 'done' && !item.error && <span className="check">✓</span>}
+                {item.status === 'done' && item.error === 'Already uploaded' && <span className="skip-text">Skipped — already uploaded</span>}
                 {item.status === 'error' && (
                   <span className="error-text">{item.error}</span>
                 )}

@@ -3,6 +3,8 @@ import { useParams } from 'react-router-dom';
 import { api } from '../lib/api';
 import { CodeEntry } from '../components/CodeEntry';
 import { FileUploader } from '../components/FileUploader';
+import { ModeToggleButton } from '../components/ModeToggleButton';
+import { PhotoGrid } from '../components/PhotoGrid';
 
 function TroubleshootingHelp() {
   const [open, setOpen] = useState(false);
@@ -37,7 +39,15 @@ type AlbumInfo = {
   welcome_text: string | null;
   background_url: string | null;
   is_open: boolean;
+  is_viewable: boolean;
   requires_code: boolean;
+};
+
+type Photo = {
+  id: string;
+  original_filename: string;
+  content_type: string;
+  uploaded_at: string;
 };
 
 export function Upload() {
@@ -48,6 +58,22 @@ export function Upload() {
   const [codeVerified, setCodeVerified] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const [photos, setPhotos] = useState<Photo[]>([]);
+  const [assetToken, setAssetToken] = useState('');
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [isSelecting, setIsSelecting] = useState(false);
+  const [selectedPhotos, setSelectedPhotos] = useState<Set<string>>(new Set());
+  const [downloading, setDownloading] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState('');
+
+  const loadPhotos = async () => {
+    if (!slug) return;
+    try {
+      const res = await api.getAlbumPhotos(slug, accessCode);
+      setPhotos(res.photos);
+      setAssetToken(res.asset_token);
+    } catch {}
+  };
 
   useEffect(() => {
     if (!slug) return;
@@ -57,6 +83,12 @@ export function Upload() {
         if (!data.requires_code) {
           setCodeVerified(true);
         }
+        if (data.is_viewable && !data.requires_code) {
+          api.getAlbumPhotos(slug).then((res) => {
+            setPhotos(res.photos);
+            setAssetToken(res.asset_token);
+          }).catch(() => {});
+        }
       })
       .catch((err) => setError(err.message))
       .finally(() => setLoading(false));
@@ -65,12 +97,50 @@ export function Upload() {
   const handleCodeSubmit = async (code: string) => {
     setCodeError(undefined);
     try {
-      // Verify code by attempting to fetch photos
-      await api.getAlbumPhotos(slug!, code);
+      const res = await api.getAlbumPhotos(slug!, code);
       setAccessCode(code);
       setCodeVerified(true);
+      if (album?.is_viewable) {
+        setPhotos(res.photos);
+        setAssetToken(res.asset_token);
+      }
     } catch {
       setCodeError('Invalid access code');
+    }
+  };
+
+  const togglePhotoSelection = (id: string) => {
+    setSelectedPhotos((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const stopSelecting = () => {
+    setIsSelecting(false);
+    setSelectedPhotos(new Set());
+    setDownloading(false);
+    setDownloadProgress('');
+  };
+
+  const handleDownloadSelected = async () => {
+    const selectedIds = photos
+      .filter((p) => selectedPhotos.has(p.id))
+      .map((photo) => photo.id);
+    if (selectedIds.length === 0 || !slug) return;
+
+    setDownloading(true);
+    setDownloadProgress('Preparing...');
+    try {
+      await api.downloadSelectedPhotos(slug, selectedIds, assetToken);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Download failed');
+    } finally {
+      setDownloading(false);
+      setDownloadProgress('');
+      setSelectedPhotos(new Set());
     }
   };
 
@@ -82,32 +152,142 @@ export function Upload() {
     return <div className="page-center"><p className="error">Album not found</p></div>;
   }
 
-  const backgroundStyle = album.background_url
-    ? { backgroundImage: `url(${album.background_url})` }
-    : undefined;
-
-  return (
-    <div className="upload-page" style={backgroundStyle}>
-      <div className="upload-container">
+  // Nothing available
+  if (!album.is_open && !album.is_viewable) {
+    return (
+      <div className="page-center">
         <h1>{album.welcome_text || album.name}</h1>
+        <p className="upload-closed">This album is not currently available.</p>
+      </div>
+    );
+  }
 
-        {!album.is_open ? (
-          <p className="upload-closed">This album is no longer accepting photos.</p>
-        ) : !codeVerified ? (
+  // Protected — need code first
+  if (album.requires_code && !codeVerified) {
+    return (
+      <div className="upload-page">
+        <div className="upload-container">
+          <h1>{album.welcome_text || album.name}</h1>
           <CodeEntry onSubmit={handleCodeSubmit} error={codeError} />
-        ) : (
-          <>
-            <p className="upload-intro">
-              Select photos from your device to share with everyone.
-            </p>
-            <FileUploader
-              slug={slug!}
-              accessCode={accessCode}
-            />
-            <TroubleshootingHelp />
-          </>
+        </div>
+      </div>
+    );
+  }
+
+  // Upload-only mode (not viewable)
+  if (album.is_open && !album.is_viewable) {
+    return (
+      <div className="upload-page">
+        <div className="upload-container">
+          <h1>{album.welcome_text || album.name}</h1>
+          <p className="upload-intro">
+            Select photos from your device to share with everyone.
+          </p>
+          <FileUploader slug={slug!} accessCode={accessCode} />
+          <TroubleshootingHelp />
+        </div>
+      </div>
+    );
+  }
+
+  // Gallery view (viewable, optionally with upload)
+  return (
+    <div className="guest-page">
+      <div className="guest-page-header">
+        <h1>{album.welcome_text || album.name}</h1>
+        {album.is_viewable && (
+          <p className="photo-count">
+            {photos.length} photo{photos.length !== 1 ? 's' : ''}
+          </p>
+        )}
+        {album.is_viewable && photos.length > 0 && (
+          <div className="guest-page-actions">
+            {isSelecting ? (
+              <ModeToggleButton mode="done" onClick={stopSelecting} />
+            ) : (
+              <ModeToggleButton
+                mode="select"
+                onClick={() => {
+                  setSelectedPhotos(new Set());
+                  setIsSelecting(true);
+                }}
+              />
+            )}
+          </div>
         )}
       </div>
+
+      {!album.is_open && album.is_viewable && photos.length === 0 && (
+        <p className="upload-closed">No photos have been shared yet.</p>
+      )}
+
+      {isSelecting && (
+        <div className="selection-bar">
+          <span>{selectedPhotos.size} selected</span>
+          <div className="selection-bar-actions">
+            <button className="btn btn-secondary" onClick={() => setSelectedPhotos(new Set())}>
+              Clear
+            </button>
+            <button
+              className="btn btn-primary"
+              disabled={selectedPhotos.size === 0 || downloading}
+              onClick={handleDownloadSelected}
+            >
+              {downloading ? downloadProgress : 'Download'}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {album.is_viewable && photos.length > 0 && (
+        <PhotoGrid
+          photos={photos}
+          assetToken={assetToken}
+          selectable={isSelecting}
+          selectedIds={selectedPhotos}
+          onToggleSelect={togglePhotoSelection}
+        />
+      )}
+
+      {/* Upload CTA + Modal */}
+      {album.is_open && (
+        <>
+          <div className="upload-launcher">
+            <button
+              className="upload-launch-button"
+              onClick={() => setShowUploadModal(true)}
+              aria-label="Upload photos"
+            >
+              <span className="upload-launch-plus" aria-hidden="true">+</span>
+              <span>Upload photos</span>
+            </button>
+          </div>
+
+          {showUploadModal && (
+            <div className="upload-modal-overlay" onClick={() => setShowUploadModal(false)}>
+              <div className="upload-modal" onClick={(e) => e.stopPropagation()}>
+                <div className="upload-modal-header">
+                  <h2>Upload photos</h2>
+                  <button
+                    className="upload-modal-close"
+                    onClick={() => setShowUploadModal(false)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <FileUploader
+                  slug={slug!}
+                  accessCode={accessCode}
+                  onUploadComplete={() => {
+                    loadPhotos();
+                  }}
+                />
+                <TroubleshootingHelp />
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

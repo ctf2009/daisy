@@ -3,8 +3,11 @@ import type { Bindings } from '../src/types';
 // In-memory R2 store
 const r2Store = new Map<string, { body: ArrayBuffer; contentType: string }>();
 
+const multipartUploads = new Map<string, R2MultipartUpload>();
+
 export function createMockR2(): R2Bucket {
   r2Store.clear();
+  multipartUploads.clear();
   return {
     async get(key: string) {
       const item = r2Store.get(key);
@@ -50,8 +53,72 @@ export function createMockR2(): R2Bucket {
     },
     async head() { return null; },
     async list() { return { objects: [], truncated: false, delimitedPrefixes: [] } as unknown as R2Objects; },
-    async createMultipartUpload() { throw new Error('not implemented'); },
-    resumeMultipartUpload() { throw new Error('not implemented'); },
+    async createMultipartUpload(key: string, options?: R2MultipartOptions) {
+      const uploadId = `mpu_${crypto.randomUUID()}`;
+      const parts: Array<{ partNumber: number; etag: string; data: ArrayBuffer }> = [];
+      const ct = (options?.httpMetadata as { contentType?: string })?.contentType || 'application/octet-stream';
+
+      const multipartUpload: R2MultipartUpload = {
+        key,
+        uploadId,
+        async uploadPart(partNumber: number, value: unknown) {
+          let bytes: ArrayBuffer;
+          if (value instanceof ArrayBuffer) {
+            bytes = value;
+          } else if (value instanceof Uint8Array) {
+            bytes = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+          } else {
+            bytes = new TextEncoder().encode(String(value)).buffer;
+          }
+          const etag = `etag_${partNumber}_${bytes.byteLength}`;
+          const existingIndex = parts.findIndex((part) => part.partNumber === partNumber);
+          if (existingIndex >= 0) {
+            parts[existingIndex] = { partNumber, etag, data: bytes };
+          } else {
+            parts.push({ partNumber, etag, data: bytes });
+          }
+          return { partNumber, etag } as R2UploadedPart;
+        },
+        async abort() {
+          parts.length = 0;
+        },
+        async complete(uploadedParts: R2UploadedPart[]) {
+          // Assemble all parts into final object
+          const total = parts
+            .filter(p => uploadedParts.some(up => up.partNumber === p.partNumber))
+            .reduce((s, p) => s + p.data.byteLength, 0);
+          const merged = new Uint8Array(total);
+          let offset = 0;
+          for (const up of [...uploadedParts].sort((a, b) => a.partNumber - b.partNumber)) {
+            const part = parts.find(p => p.partNumber === up.partNumber);
+            if (part) {
+              merged.set(new Uint8Array(part.data), offset);
+              offset += part.data.byteLength;
+            }
+          }
+          r2Store.set(key, { body: merged.buffer, contentType: ct });
+          return { size: total } as unknown as R2Object;
+        },
+      } as unknown as R2MultipartUpload;
+
+      // Store the multipart object so resumeMultipartUpload can find it
+      multipartUploads.set(`${key}:${uploadId}`, multipartUpload);
+      return multipartUpload;
+    },
+    resumeMultipartUpload(key: string, uploadId: string) {
+      const existing = multipartUploads.get(`${key}:${uploadId}`);
+      if (!existing) {
+        // Return a stub that throws on use (matches R2 behavior for unknown uploads)
+        return {
+          key,
+          uploadId,
+          async uploadPart() { throw new Error('Multipart upload not found'); },
+          async abort() {},
+          async complete() { throw new Error('Multipart upload not found'); },
+        } as unknown as R2MultipartUpload;
+      }
+      return existing;
+    },
   } as unknown as R2Bucket;
 }
 
@@ -63,6 +130,7 @@ export function createMockD1(): D1Database {
   const tables: Record<string, Table> = {
     albums: [],
     uploads: [],
+    upload_parts: [],
     login_attempts: [],
   };
 
@@ -80,6 +148,7 @@ export function createMockD1(): D1Database {
       cols.forEach((col, i) => { row[col] = params[i]; });
       // Set defaults
       if (row.is_open === undefined && table === 'albums') row.is_open = 1;
+      if (row.is_viewable === undefined && table === 'albums') row.is_viewable = 0;
       if (!row.created_at) row.created_at = new Date().toISOString();
       if (!row.updated_at) row.updated_at = new Date().toISOString();
       if (!row.uploaded_at) row.uploaded_at = new Date().toISOString();
@@ -109,6 +178,32 @@ export function createMockD1(): D1Database {
               (upload) => upload.album_id === album.id && typeof upload.file_size === 'number'
             ).length,
           })),
+          changes: 0,
+        };
+      }
+
+      if (/FROM\s+UPLOADS/i.test(trimmed) && /JOIN\s+ALBUMS/i.test(trimmed) && /WHERE\s+UPLOADS\.ID\s*=\s*\?/i.test(trimmed)) {
+        const uploadId = params[0];
+        const uploads = tables.uploads || [];
+        const albums = tables.albums || [];
+        const upload = uploads.find((row) => row.id === uploadId);
+
+        if (!upload) {
+          return { results: [], changes: 0 };
+        }
+
+        const album = albums.find((row) => row.id === upload.album_id);
+        if (!album) {
+          return { results: [], changes: 0 };
+        }
+
+        return {
+          results: [{
+            r2_key: upload.r2_key,
+            thumbnail_key: upload.thumbnail_key,
+            content_type: upload.content_type,
+            slug: album.slug,
+          }],
           changes: 0,
         };
       }
