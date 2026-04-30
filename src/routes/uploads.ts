@@ -59,11 +59,15 @@ async function saveUploadedPart(
 
 async function requireAssetAccess(
   c: { req: { header(name: string): string | undefined; query(key: string): string | undefined }; env: Bindings },
-  albumSlug: string
+  albumSlug: string,
+  ownerEmail: string
 ) {
   const bearerToken = extractBearerToken(c.req.header('Authorization'));
   if (bearerToken) {
-    await verifyAuthToken(bearerToken, c.env);
+    const { email } = await verifyAuthToken(bearerToken, c.env);
+    if (email !== ownerEmail) {
+      throw new Error('Unauthorized');
+    }
     return;
   }
 
@@ -367,18 +371,18 @@ uploadRoutes.get('/uploads/:uploadId/photo', async (c) => {
   const uploadId = c.req.param('uploadId');
 
   const upload = await c.env.DB.prepare(
-    `SELECT uploads.r2_key, uploads.content_type, albums.slug
+    `SELECT uploads.r2_key, uploads.content_type, albums.slug, albums.owner_email
      FROM uploads
      JOIN albums ON albums.id = uploads.album_id
      WHERE uploads.id = ?`
-  ).bind(uploadId).first<{ r2_key: string; content_type: string; slug: string }>();
+  ).bind(uploadId).first<{ r2_key: string; content_type: string; slug: string; owner_email: string }>();
 
   if (!upload) {
     return c.json({ error: 'Not found' }, 404);
   }
 
   try {
-    await requireAssetAccess(c, upload.slug);
+    await requireAssetAccess(c, upload.slug, upload.owner_email);
   } catch {
     return c.json({ error: 'Unauthorized' }, 401);
   }
@@ -401,18 +405,18 @@ uploadRoutes.get('/uploads/:uploadId/thumbnail', async (c) => {
   const uploadId = c.req.param('uploadId');
 
   const upload = await c.env.DB.prepare(
-    `SELECT uploads.thumbnail_key, uploads.r2_key, albums.slug
+    `SELECT uploads.thumbnail_key, uploads.r2_key, albums.slug, albums.owner_email
      FROM uploads
      JOIN albums ON albums.id = uploads.album_id
      WHERE uploads.id = ?`
-  ).bind(uploadId).first<{ thumbnail_key: string; r2_key: string; slug: string }>();
+  ).bind(uploadId).first<{ thumbnail_key: string; r2_key: string; slug: string; owner_email: string }>();
 
   if (!upload) {
     return c.json({ error: 'Not found' }, 404);
   }
 
   try {
-    await requireAssetAccess(c, upload.slug);
+    await requireAssetAccess(c, upload.slug, upload.owner_email);
   } catch {
     return c.json({ error: 'Unauthorized' }, 401);
   }
@@ -458,7 +462,7 @@ uploadRoutes.get('/albums/:slug/photos', async (c) => {
     return c.json({ error: 'Invalid access code' }, 403);
   }
 
-  if (!album.access_code && !album.is_viewable) {
+  if (!album.is_viewable) {
     return c.json({ error: 'This gallery is not available' }, 403);
   }
 

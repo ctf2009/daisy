@@ -9,11 +9,11 @@ function req(path: string, init?: RequestInit) {
   return app.request(path, init, bindings);
 }
 
-async function getToken() {
+async function getToken(email = 'test@example.com', password = 'testpass') {
   const res = await req('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: 'test@example.com', password: 'testpass' }),
+    body: JSON.stringify({ email, password }),
   });
   const body = await res.json() as { token: string };
   return body.token;
@@ -433,12 +433,13 @@ describe('GET /api/albums/:slug/photos', () => {
     expect(res.status).toBe(403);
   });
 
-  it('allows listing with correct code', async () => {
+  it('rejects listing for hidden protected albums even with the correct code', async () => {
     const token = await getToken();
     const album = await createAlbum(token, 'Protected List OK', 'code123');
 
     const res = await req(`/api/albums/${album.slug}/photos?access_code=code123`);
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ error: 'This gallery is not available' });
   });
 
   it('still requires the access code for viewable protected albums', async () => {
@@ -458,6 +459,15 @@ describe('GET /api/albums/:slug/photos', () => {
 
     const res = await req(`/api/albums/${album.slug}/photos?access_code=code123`);
     expect(res.status).toBe(200);
+  });
+
+  it('keeps hidden protected albums unavailable even with the correct code', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Hidden Protected', 'code123');
+
+    const res = await req(`/api/albums/${album.slug}/photos?access_code=code123`);
+    expect(res.status).toBe(403);
+    await expect(res.json()).resolves.toMatchObject({ error: 'This gallery is not available' });
   });
 
   it('returns an album asset token that allows authorized photo access', async () => {
@@ -490,6 +500,35 @@ describe('GET /api/albums/:slug/photos', () => {
       `/api/uploads/${upload_id}/photo?token=${encodeURIComponent(body.asset_token)}`
     );
     expect(assetRes.status).toBe(200);
+  });
+
+  it('rejects bearer photo access from a different authenticated account', async () => {
+    const ownerToken = await getToken();
+    const intruderToken = await getToken('admin@test.com', 'secret');
+    const album = await createAlbum(ownerToken, 'Owner Only Assets');
+    await updateAlbum(ownerToken, album.slug, { is_viewable: true });
+
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'private.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xFF, 0xD8]),
+    });
+
+    const intruderRes = await req(`/api/uploads/${upload_id}/photo`, {
+      headers: { Authorization: `Bearer ${intruderToken}` },
+    });
+    expect(intruderRes.status).toBe(401);
+
+    const ownerRes = await req(`/api/uploads/${upload_id}/photo`, {
+      headers: { Authorization: `Bearer ${ownerToken}` },
+    });
+    expect(ownerRes.status).toBe(200);
   });
 });
 

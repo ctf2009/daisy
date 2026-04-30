@@ -175,8 +175,8 @@ All tokens use HS256 (HMAC-SHA256) signed with `JWT_SECRET`.
 # Install dependencies (auto-installs web deps via postinstall)
 npm install
 
-# Apply the D1 schema locally
-npx wrangler d1 execute daisy --local --file=src/db/schema.sql
+# Create or upgrade the local D1 database
+npm run db:migrate
 
 # Start both API and frontend dev servers
 npm run dev
@@ -201,6 +201,8 @@ JWT_SECRET=local-dev-secret-change-in-production
 | `npm run dev:api` | Start API only |
 | `npm run dev:web` | Start frontend only |
 | `npm run build` | Build frontend into `dist/web/` |
+| `npm run db:migrate` | Apply local D1 migrations |
+| `npm run db:migrate:remote` | Apply remote D1 migrations |
 | `npm test` | Run worker tests |
 | `npm run test:web` | Run frontend tests |
 | `npm run test:all` | Run all tests |
@@ -287,7 +289,7 @@ npx wrangler r2 bucket create daisy-photos
 
 # Update wrangler.toml with the D1 database_id from above
 
-# Apply schema to remote database
+# Apply migrations to remote database
 npm run db:migrate:remote
 
 # Set production secrets

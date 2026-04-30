@@ -203,6 +203,7 @@ export function createMockD1(): D1Database {
             thumbnail_key: upload.thumbnail_key,
             content_type: upload.content_type,
             slug: album.slug,
+            owner_email: album.owner_email,
           }],
           changes: 0,
         };

@@ -26,6 +26,7 @@ DEFAULT_ALBUM_SLUG = ""
 binding = "DB"
 database_name = "daisy"
 database_id = "YOUR_D1_DATABASE_ID"
+migrations_dir = "src/db/migrations"
 
 [[r2_buckets]]
 binding = "PHOTOS"
