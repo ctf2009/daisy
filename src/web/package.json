@@ -11,6 +11,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@uppy/aws-s3": "^5.1.0",
+    "@uppy/core": "^5.2.0",
     "fflate": "^0.8.2",
     "heic2any": "^0.0.4",
     "qrcode.react": "^4.2.0",

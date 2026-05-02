@@ -1,5 +1,9 @@
 const API_BASE = import.meta.env.DEV ? 'http://localhost:8787' : '';
 
+type AssetPhoto = {
+  id: string;
+};
+
 function getToken(): string | null {
   return localStorage.getItem('daisy_token');
 }
@@ -56,6 +60,13 @@ async function uploadBinary(path: string, file: Blob, contentType: string): Prom
   }
 }
 
+function triggerBrowserDownload(path: string, params: Record<string, string>) {
+  const url = `${API_BASE}${path}?${new URLSearchParams(params)}`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.click();
+}
+
 // Auth
 export const api = {
   login: (email: string, password: string) =>
@@ -81,6 +92,7 @@ export const api = {
       welcome_text: string | null;
       background_url: string | null;
       is_open: boolean;
+      is_viewable: boolean;
       requires_code: boolean;
     }>(`/api/albums/${slug}`),
 
@@ -91,7 +103,9 @@ export const api = {
       slug: string;
       access_code: string | null;
       is_open: number;
+      is_viewable: number;
       welcome_text: string | null;
+      asset_token: string;
       uploads: Array<{
         id: string;
         original_filename: string;
@@ -112,7 +126,7 @@ export const api = {
       }>;
     }>('/api/albums'),
 
-  updateAlbum: (slug: string, data: { name?: string; access_code?: string | null; welcome_text?: string | null; is_open?: boolean }) =>
+  updateAlbum: (slug: string, data: { name?: string; access_code?: string | null; welcome_text?: string | null; is_open?: boolean; is_viewable?: boolean }) =>
     request<{ ok: true }>(`/api/albums/${slug}`, {
       method: 'PUT',
       body: JSON.stringify(data),
@@ -137,33 +151,57 @@ export const api = {
       method: 'POST',
     });
 
-    const url = `${API_BASE}/api/albums/${slug}/download?${new URLSearchParams({ token })}`;
-    const a = document.createElement('a');
-    a.href = url;
-    a.click();
+    triggerBrowserDownload(`/api/albums/${slug}/download`, { token });
+  },
+
+  downloadSelectedPhotos: async (slug: string, ids: string[], assetToken?: string) => {
+    const body: {
+      ids: string[];
+      asset_token?: string;
+    } = { ids };
+
+    if (assetToken) {
+      body.asset_token = assetToken;
+    }
+
+    const { token } = await request<{ token: string }>(`/api/albums/${slug}/selected-download-token`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    triggerBrowserDownload(`/api/albums/${slug}/selected-download`, { token });
   },
 
   // Uploads
-  requestUpload: (slug: string, data: { content_type: string; filename: string; access_code?: string }) =>
-    request<{ upload_id: string; r2_key: string; thumbnail_key: string }>(`/api/albums/${slug}/upload`, {
+  requestUpload: (slug: string, data: { content_type: string; filename: string; access_code?: string; content_hash?: string }) =>
+    request<{
+      upload_id?: string;
+      r2_key?: string;
+      thumbnail_key?: string;
+      multipart_upload_id?: string;
+      duplicate?: boolean;
+      existing_id?: string;
+    }>(`/api/albums/${slug}/upload`, {
       method: 'POST',
       body: JSON.stringify(data),
     }),
 
+  // Legacy single-request upload (kept as fallback)
   uploadFile: (uploadId: string, file: Blob, contentType: string) =>
     uploadBinary(`/api/uploads/${uploadId}/file`, file, contentType),
 
   uploadThumbnail: (uploadId: string, file: Blob) =>
     uploadBinary(`/api/uploads/${uploadId}/thumbnail`, file, 'image/jpeg'),
 
-  getPhotoUrl: (uploadId: string) =>
-    `${API_BASE}/api/uploads/${uploadId}/photo`,
+  getPhotoUrl: (photo: AssetPhoto, assetToken: string) =>
+    `${API_BASE}/api/uploads/${photo.id}/photo?${new URLSearchParams({ token: assetToken })}`,
 
-  getThumbnailUrl: (uploadId: string) =>
-    `${API_BASE}/api/uploads/${uploadId}/thumbnail`,
+  getThumbnailUrl: (photo: AssetPhoto, assetToken: string) =>
+    `${API_BASE}/api/uploads/${photo.id}/thumbnail?${new URLSearchParams({ token: assetToken })}`,
 
   getAlbumPhotos: (slug: string, accessCode?: string) =>
     request<{
+      asset_token: string;
       photos: Array<{
         id: string;
         original_filename: string;

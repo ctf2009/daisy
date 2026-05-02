@@ -85,4 +85,38 @@ describe('upload helpers', () => {
     });
     expect(clickSpy).toHaveBeenCalled();
   });
+
+  it('requests a short-lived selected download token before redirecting the browser', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ token: 'selected-download-token' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+
+    await api.downloadSelectedPhotos('album-slug', ['photo-1', 'photo-2'], 'asset-token');
+
+    expect(global.fetch).toHaveBeenCalledWith('http://localhost:8787/api/albums/album-slug/selected-download-token', {
+      method: 'POST',
+      body: JSON.stringify({
+        ids: ['photo-1', 'photo-2'],
+        asset_token: 'asset-token',
+      }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
+  it('builds tokenized asset URLs for photos and thumbnails', () => {
+    const photo = { id: 'upload-1' };
+
+    expect(api.getPhotoUrl(photo, 'asset-token')).toBe(
+      'http://localhost:8787/api/uploads/upload-1/photo?token=asset-token'
+    );
+    expect(api.getThumbnailUrl(photo, 'asset-token')).toBe(
+      'http://localhost:8787/api/uploads/upload-1/thumbnail?token=asset-token'
+    );
+  });
 });

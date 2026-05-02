@@ -1,4 +1,4 @@
-import logoSrc from '../assets/daisy-logo.png';
+import logoSrc from '../assets/daisy-logo.webp';
 
 type Props = {
   width?: number;
