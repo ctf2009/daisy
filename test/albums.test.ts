@@ -541,3 +541,88 @@ describe('album background image', () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe('whole-album download (guest + owner)', () => {
+  beforeEach(() => { bindings = createTestBindings(); });
+
+  async function seedViewableAlbumWithPhoto() {
+    const token = await getToken();
+    const created = await createAlbum(token, { name: 'Download All Album' });
+    const { slug } = await created.json() as { slug: string };
+    await req(`/api/albums/${slug}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ is_viewable: true }),
+    });
+
+    const slot = await requestUpload(slug, { content_type: 'image/jpeg', filename: 'a.jpg' });
+    const { upload_id } = await slot.json() as { upload_id: string };
+    await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]),
+    });
+
+    const photosRes = await req(`/api/albums/${slug}/photos`);
+    const { asset_token } = await photosRes.json() as { asset_token: string };
+    return { token, slug, asset_token };
+  }
+
+  it('guest with a valid asset token can download the whole album as one zip', async () => {
+    const { slug, asset_token } = await seedViewableAlbumWithPhoto();
+
+    const tokenRes = await req(`/api/albums/${slug}/download-all-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ asset_token }),
+    });
+    expect(tokenRes.status).toBe(200);
+    const { token: dlToken } = await tokenRes.json() as { token: string };
+
+    const zipRes = await req(`/api/albums/${slug}/download-all?token=${encodeURIComponent(dlToken)}`);
+    expect(zipRes.status).toBe(200);
+    expect(zipRes.headers.get('Content-Type')).toBe('application/zip');
+  });
+
+  it('owner can download the whole album via bearer auth', async () => {
+    const { token, slug } = await seedViewableAlbumWithPhoto();
+
+    const tokenRes = await req(`/api/albums/${slug}/download-all-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({}),
+    });
+    expect(tokenRes.status).toBe(200);
+  });
+
+  it('rejects a download-all token request with no asset token and no auth', async () => {
+    const { slug } = await seedViewableAlbumWithPhoto();
+
+    const res = await req(`/api/albums/${slug}/download-all-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a download-all token request with a foreign album asset token', async () => {
+    const { asset_token } = await seedViewableAlbumWithPhoto();
+
+    const other = await createAlbum(await getToken(), { name: 'Other Album' });
+    const { slug: otherSlug } = await other.json() as { slug: string };
+
+    const res = await req(`/api/albums/${otherSlug}/download-all-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ asset_token }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects the download-all stream without a token', async () => {
+    const { slug } = await seedViewableAlbumWithPhoto();
+    const res = await req(`/api/albums/${slug}/download-all`);
+    expect(res.status).toBe(401);
+  });
+});

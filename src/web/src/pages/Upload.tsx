@@ -65,6 +65,7 @@ export function Upload() {
   const [selectedPhotos, setSelectedPhotos] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState('');
+  const [downloadingAll, setDownloadingAll] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const timersRef = useRef<number[]>([]);
 
@@ -123,6 +124,18 @@ export function Upload() {
       }
     } catch {
       setCodeError('Invalid access code');
+    }
+  };
+
+  const handleDownloadAll = async () => {
+    if (!slug) return;
+    setDownloadingAll(true);
+    try {
+      await api.downloadAllPhotos(slug, assetToken);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Download failed');
+    } finally {
+      setDownloadingAll(false);
     }
   };
 
@@ -232,13 +245,22 @@ export function Upload() {
             {isSelecting ? (
               <ModeToggleButton mode="done" onClick={stopSelecting} />
             ) : (
-              <ModeToggleButton
-                mode="select"
-                onClick={() => {
-                  setSelectedPhotos(new Set());
-                  setIsSelecting(true);
-                }}
-              />
+              <>
+                <button
+                  className="btn btn-secondary btn-compact"
+                  disabled={downloadingAll}
+                  onClick={handleDownloadAll}
+                >
+                  {downloadingAll ? 'Preparing...' : 'Download all'}
+                </button>
+                <ModeToggleButton
+                  mode="select"
+                  onClick={() => {
+                    setSelectedPhotos(new Set());
+                    setIsSelecting(true);
+                  }}
+                />
+              </>
             )}
           </div>
         )}

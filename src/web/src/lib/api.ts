@@ -184,6 +184,22 @@ export const api = {
     triggerBrowserDownload(`/api/albums/${slug}/selected-download`, { token });
   },
 
+  // Whole album as a single zip. Guests pass the album asset token they
+  // already hold; the owner's bearer token is sent automatically.
+  downloadAllPhotos: async (slug: string, assetToken?: string) => {
+    const body: { asset_token?: string } = {};
+    if (assetToken) {
+      body.asset_token = assetToken;
+    }
+
+    const { token } = await request<{ token: string }>(`/api/albums/${slug}/download-all-token`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+
+    triggerBrowserDownload(`/api/albums/${slug}/download-all`, { token });
+  },
+
   // Uploads
   requestUpload: (slug: string, data: { content_type: string; filename: string; access_code?: string; content_hash?: string }) =>
     request<{

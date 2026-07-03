@@ -6,10 +6,12 @@ import {
   extractBearerToken,
   issueAlbumAssetsToken,
   issueDownloadToken,
+  issueFullDownloadToken,
   issueSelectedDownloadToken,
   verifyAuthToken,
   verifyAlbumAssetsToken,
   verifyDownloadToken,
+  verifyFullDownloadToken,
   verifySelectedDownloadToken,
 } from '../lib/auth';
 import { generateId, generateSlug } from '../lib/tokens';
@@ -331,6 +333,84 @@ albumRoutes.get('/:slug/download', async (c) => {
      WHERE album_id = ? AND file_size IS NOT NULL
      ORDER BY uploaded_at DESC`
   ).bind(album.id).all<{ id: string; original_filename: string | null; r2_key: string }>();
+
+  return createArchiveResponse(c, album.name, uploads.results);
+});
+
+// Mint a whole-album download token. Guests authorize with the album asset
+// token they already hold (same trust level as viewing the gallery); the
+// owner authorizes with their bearer token.
+albumRoutes.post('/:slug/download-all-token', async (c) => {
+  const slug = c.req.param('slug');
+  const { asset_token } = await c.req.json<{ asset_token?: string }>().catch(() => ({ asset_token: undefined }));
+
+  const album = await c.env.DB.prepare(
+    'SELECT owner_email FROM albums WHERE slug = ?'
+  ).bind(slug).first<{ owner_email: string }>();
+
+  if (!album) {
+    return c.json({ error: 'Album not found' }, 404);
+  }
+
+  const bearerToken = extractBearerToken(c.req.header('Authorization'));
+  let authorized = false;
+
+  if (bearerToken) {
+    try {
+      const { email } = await verifyAuthToken(bearerToken, c.env);
+      authorized = email === album.owner_email;
+    } catch {
+      authorized = false;
+    }
+  }
+
+  if (!authorized) {
+    if (!asset_token) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    try {
+      await verifyAlbumAssetsToken(asset_token, slug, c.env);
+      authorized = true;
+    } catch {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+  }
+
+  const token = await issueFullDownloadToken(slug, c.env);
+  return c.json({ token });
+});
+
+albumRoutes.get('/:slug/download-all', async (c) => {
+  const slug = c.req.param('slug');
+  const token = c.req.query('token');
+  if (!token) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  try {
+    await verifyFullDownloadToken(token, slug, c.env);
+  } catch {
+    return c.json({ error: 'Invalid or expired token' }, 401);
+  }
+
+  const album = await c.env.DB.prepare(
+    'SELECT id, name FROM albums WHERE slug = ?'
+  ).bind(slug).first<{ id: string; name: string }>();
+
+  if (!album) {
+    return c.json({ error: 'Album not found' }, 404);
+  }
+
+  const uploads = await c.env.DB.prepare(
+    `SELECT id, original_filename, r2_key
+     FROM uploads
+     WHERE album_id = ? AND file_size IS NOT NULL
+     ORDER BY uploaded_at DESC`
+  ).bind(album.id).all<ArchiveUpload>();
+
+  if (uploads.results.length === 0) {
+    return c.json({ error: 'No photos to download' }, 404);
+  }
 
   return createArchiveResponse(c, album.name, uploads.results);
 });

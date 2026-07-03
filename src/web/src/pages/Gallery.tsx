@@ -44,6 +44,7 @@ export function Gallery() {
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState('');
   const [coverUploading, setCoverUploading] = useState(false);
+  const [downloadingAll, setDownloadingAll] = useState(false);
   const coverInputRef = useRef<HTMLInputElement>(null);
 
   const isOwner = isLoggedIn() && album !== null;
@@ -155,6 +156,19 @@ export function Gallery() {
     }
   };
 
+  const handleDownloadAll = async () => {
+    if (!slug) return;
+    setDownloadingAll(true);
+    try {
+      const assetToken = album?.asset_token || publicAlbum?.asset_token || '';
+      await api.downloadAllPhotos(slug, assetToken);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Download failed');
+    } finally {
+      setDownloadingAll(false);
+    }
+  };
+
   const togglePhotoSelection = (id: string) => {
     setSelectedPhotos((prev) => {
       const next = new Set(prev);
@@ -211,13 +225,24 @@ export function Gallery() {
               {isSelecting ? (
                 <ModeToggleButton mode="done" onClick={stopSelecting} />
               ) : (
-                <ModeToggleButton
-                  mode="select"
-                  onClick={() => {
-                    setSelectedPhotos(new Set());
-                    setIsSelecting(true);
-                  }}
-                />
+                <>
+                  {publicAlbum.photos.length > 0 && (
+                    <button
+                      className="btn btn-secondary btn-compact"
+                      disabled={downloadingAll}
+                      onClick={handleDownloadAll}
+                    >
+                      {downloadingAll ? 'Preparing...' : 'Download all'}
+                    </button>
+                  )}
+                  <ModeToggleButton
+                    mode="select"
+                    onClick={() => {
+                      setSelectedPhotos(new Set());
+                      setIsSelecting(true);
+                    }}
+                  />
+                </>
               )}
             </div>
           </div>

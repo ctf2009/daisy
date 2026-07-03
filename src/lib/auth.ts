@@ -1,7 +1,7 @@
 import { SignJWT, jwtVerify } from 'jose';
 import type { Bindings } from '../types';
 
-type TokenScope = 'auth' | 'album-download' | 'album-assets' | 'selected-download';
+type TokenScope = 'auth' | 'album-download' | 'album-assets' | 'selected-download' | 'full-download';
 
 type AuthPayload = {
   email: string;
@@ -23,6 +23,11 @@ type SelectedDownloadPayload = {
   scope: 'selected-download';
   slug: string;
   ids: string[];
+};
+
+type FullDownloadPayload = {
+  scope: 'full-download';
+  slug: string;
 };
 
 function getSecret(env: Bindings): Uint8Array {
@@ -63,6 +68,14 @@ export async function issueSelectedDownloadToken(
   env: Bindings
 ): Promise<string> {
   return new SignJWT({ scope: 'selected-download' satisfies TokenScope, slug, ids })
+    .setProtectedHeader({ alg: 'HS256' })
+    .setIssuedAt()
+    .setExpirationTime('5m')
+    .sign(getSecret(env));
+}
+
+export async function issueFullDownloadToken(slug: string, env: Bindings): Promise<string> {
+  return new SignJWT({ scope: 'full-download' satisfies TokenScope, slug })
     .setProtectedHeader({ alg: 'HS256' })
     .setIssuedAt()
     .setExpirationTime('5m')
@@ -130,4 +143,17 @@ export async function verifySelectedDownloadToken(
   }
 
   return { ids: typedPayload.ids };
+}
+
+export async function verifyFullDownloadToken(
+  token: string,
+  slug: string,
+  env: Bindings
+): Promise<void> {
+  const { payload } = await jwtVerify(token, getSecret(env));
+  const typedPayload = payload as Partial<FullDownloadPayload>;
+
+  if (typedPayload.scope !== 'full-download' || typedPayload.slug !== slug) {
+    throw new Error('Invalid full download token');
+  }
 }
