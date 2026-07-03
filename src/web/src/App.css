@@ -442,29 +442,25 @@
 
 /* Gallery Hero (guest cover image) */
 .gallery-hero {
-  width: 100%;
-  margin-bottom: 8px;
+  display: flex;
+  justify-content: center;
+  margin-bottom: 16px;
 }
 
+/* Scale down to fit, never upscale — the image renders at most its
+   natural size, centered, aspect ratio preserved. */
 .gallery-hero img {
   display: block;
-  width: 100%;
+  max-width: 100%;
   border-radius: var(--radius);
 }
 
 .gallery-hero-large img {
-  height: auto;
-  max-height: 55vh;
-  object-fit: contain;
+  max-height: 240px;
 }
 
 .gallery-hero-small img {
-  height: clamp(120px, 24vw, 220px);
-  object-fit: cover;
-}
-
-.page-center .gallery-hero {
-  max-width: 600px;
+  max-height: 130px;
 }
 
 /* Owner cover controls */
