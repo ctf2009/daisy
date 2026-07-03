@@ -7,7 +7,10 @@ dist/
 # Cloudflare
 .wrangler/
 .dev.vars
-wrangler.toml.local
+# Real production config (resource IDs + routes). Secrets are NOT here —
+# they live in Cloudflare (wrangler secret). Kept out of git so the committed
+# wrangler.toml stays a clean template.
+wrangler.prod.toml
 
 # IDE
 .vscode/

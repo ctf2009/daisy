@@ -153,11 +153,17 @@ uploadRoutes.put('/uploads/:uploadId/file', async (c) => {
   const uploadId = c.req.param('uploadId');
 
   const upload = await c.env.DB.prepare(
-    'SELECT r2_key, content_type FROM uploads WHERE id = ?'
-  ).bind(uploadId).first<{ r2_key: string; content_type: string }>();
+    'SELECT r2_key, content_type, file_size FROM uploads WHERE id = ?'
+  ).bind(uploadId).first<{ r2_key: string; content_type: string; file_size: number | null }>();
 
   if (!upload) {
     return c.json({ error: 'Upload not found' }, 404);
+  }
+
+  // Completed uploads are immutable — photo ids are visible to gallery
+  // viewers, so an open write here would let anyone replace photos.
+  if (typeof upload.file_size === 'number') {
+    return c.json({ error: 'Upload already completed' }, 409);
   }
 
   const contentLength = parseInt(c.req.header('Content-Length') || '0');
@@ -311,11 +317,16 @@ uploadRoutes.delete('/uploads/:uploadId/abort', async (c) => {
   const uploadId = c.req.param('uploadId');
 
   const upload = await c.env.DB.prepare(
-    'SELECT r2_key, multipart_upload_id FROM uploads WHERE id = ?'
-  ).bind(uploadId).first<{ r2_key: string; multipart_upload_id: string | null }>();
+    'SELECT r2_key, multipart_upload_id, file_size FROM uploads WHERE id = ?'
+  ).bind(uploadId).first<{ r2_key: string; multipart_upload_id: string | null; file_size: number | null }>();
 
   if (!upload) {
     return c.json({ error: 'Upload not found' }, 404);
+  }
+
+  // Never let an unauthenticated abort delete a completed photo.
+  if (typeof upload.file_size === 'number') {
+    return c.json({ error: 'Upload already completed' }, 409);
   }
 
   if (upload.multipart_upload_id) {
@@ -342,6 +353,13 @@ uploadRoutes.put('/uploads/:uploadId/thumbnail', async (c) => {
 
   if (!upload) {
     return c.json({ error: 'Upload not found' }, 404);
+  }
+
+  // Thumbnails are written once, right after the upload completes; an open
+  // rewrite would let gallery viewers replace them.
+  const existingThumbnail = await c.env.PHOTOS.head(upload.thumbnail_key);
+  if (existingThumbnail) {
+    return c.json({ error: 'Thumbnail already uploaded' }, 409);
   }
 
   const contentLength = parseInt(c.req.header('Content-Length') || '0');

@@ -448,3 +448,96 @@ describe('GET /api/albums/:slug/selected-download', () => {
     expect(body.token).toBeTruthy();
   });
 });
+
+describe('album background image', () => {
+  beforeEach(() => { bindings = createTestBindings(); });
+
+  function backgroundForm(type = 'image/jpeg', name = 'cover.jpg') {
+    const form = new FormData();
+    form.append('file', new File([new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0])], name, { type }));
+    return form;
+  }
+
+  async function createAlbumSlug(token: string) {
+    const res = await createAlbum(token, { name: 'Background Album' });
+    const { slug } = await res.json() as { slug: string };
+    return slug;
+  }
+
+  it('owner can set a background and it appears in public info with a versioned url', async () => {
+    const token = await getToken();
+    const slug = await createAlbumSlug(token);
+
+    const uploadRes = await req(`/api/albums/${slug}/background`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: backgroundForm(),
+    });
+    expect(uploadRes.status).toBe(200);
+    const uploadBody = await uploadRes.json() as { background_url: string };
+    expect(uploadBody.background_url).toContain(`/api/albums/${slug}/background?v=`);
+
+    const infoRes = await req(`/api/albums/${slug}`);
+    const info = await infoRes.json() as { background_url: string | null };
+    expect(info.background_url).toBe(uploadBody.background_url);
+
+    const imageRes = await req(`/api/albums/${slug}/background`);
+    expect(imageRes.status).toBe(200);
+    expect(imageRes.headers.get('Content-Type')).toBe('image/jpeg');
+  });
+
+  it('rejects background upload without auth', async () => {
+    const token = await getToken();
+    const slug = await createAlbumSlug(token);
+
+    const res = await req(`/api/albums/${slug}/background`, {
+      method: 'POST',
+      body: backgroundForm(),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects non-web-displayable image types', async () => {
+    const token = await getToken();
+    const slug = await createAlbumSlug(token);
+
+    const res = await req(`/api/albums/${slug}/background`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: backgroundForm('image/heic', 'cover.heic'),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('owner can remove the background', async () => {
+    const token = await getToken();
+    const slug = await createAlbumSlug(token);
+
+    await req(`/api/albums/${slug}/background`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: backgroundForm(),
+    });
+
+    const deleteRes = await req(`/api/albums/${slug}/background`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(deleteRes.status).toBe(200);
+
+    const infoRes = await req(`/api/albums/${slug}`);
+    const info = await infoRes.json() as { background_url: string | null };
+    expect(info.background_url).toBeNull();
+
+    const imageRes = await req(`/api/albums/${slug}/background`);
+    expect(imageRes.status).toBe(404);
+  });
+
+  it('rejects background removal without auth', async () => {
+    const token = await getToken();
+    const slug = await createAlbumSlug(token);
+
+    const res = await req(`/api/albums/${slug}/background`, { method: 'DELETE' });
+    expect(res.status).toBe(401);
+  });
+});

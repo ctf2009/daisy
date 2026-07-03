@@ -51,7 +51,15 @@ export function createMockR2(): R2Bucket {
     async delete(keys: string | string[]) {
       for (const k of Array.isArray(keys) ? keys : [keys]) r2Store.delete(k);
     },
-    async head() { return null; },
+    async head(key: string) {
+      const item = r2Store.get(key);
+      if (!item) return null;
+      return {
+        key,
+        size: item.body.byteLength,
+        httpMetadata: { contentType: item.contentType },
+      } as unknown as R2Object;
+    },
     async list() { return { objects: [], truncated: false, delimitedPrefixes: [] } as unknown as R2Objects; },
     async createMultipartUpload(key: string, options?: R2MultipartOptions) {
       const uploadId = `mpu_${crypto.randomUUID()}`;

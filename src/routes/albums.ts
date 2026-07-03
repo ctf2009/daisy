@@ -13,7 +13,6 @@ import {
   verifySelectedDownloadToken,
 } from '../lib/auth';
 import { generateId, generateSlug } from '../lib/tokens';
-import { isValidImageType } from '../lib/validation';
 
 type Album = {
   id: string;
@@ -30,6 +29,18 @@ type Album = {
 };
 
 export const albumRoutes = new Hono<{ Bindings: Bindings; Variables: { userEmail: string } }>();
+
+// Background images are rendered directly by browsers, so only allow
+// web-displayable formats (no HEIC/TIFF/DNG like guest photo uploads).
+const BACKGROUND_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
+const MAX_BACKGROUND_SIZE = 10 * 1024 * 1024; // 10MB
+
+// Each upload gets a fresh key, so the key doubles as a cache-buster.
+function backgroundUrlFor(slug: string, backgroundKey: string | null): string | null {
+  if (!backgroundKey) return null;
+  const version = backgroundKey.split('/').pop()?.split('.')[0] || '';
+  return `/api/albums/${slug}/background?v=${version}`;
+}
 
 function toDownloadFilename(albumName: string): string {
   const safeName = albumName.replace(/[^a-zA-Z0-9_-]/g, '_') || 'album';
@@ -193,21 +204,11 @@ albumRoutes.get('/:slug', async (c) => {
     return c.json({ error: 'Album not found' }, 404);
   }
 
-  // Generate a signed URL for the background image if one exists
-  let backgroundUrl: string | null = null;
-  if (album.background_key) {
-    const obj = await c.env.PHOTOS.get(album.background_key);
-    if (obj) {
-      // For public access we'll serve it through the worker
-      backgroundUrl = `/api/albums/${slug}/background`;
-    }
-  }
-
   return c.json({
     name: album.name,
     slug: album.slug,
     welcome_text: album.welcome_text,
-    background_url: backgroundUrl,
+    background_url: backgroundUrlFor(slug, album.background_key),
     is_open: !!album.is_open,
     is_viewable: !!album.is_viewable,
     requires_code: !!album.access_code,
@@ -234,7 +235,8 @@ albumRoutes.get('/:slug/background', async (c) => {
 
   const headers = new Headers();
   headers.set('Content-Type', obj.httpMetadata?.contentType || 'image/jpeg');
-  headers.set('Cache-Control', 'public, max-age=3600');
+  // URLs are versioned per upload (?v=), so this can cache aggressively
+  headers.set('Cache-Control', 'public, max-age=86400');
 
   return new Response(obj.body, { headers });
 });
@@ -242,7 +244,7 @@ albumRoutes.get('/:slug/background', async (c) => {
 // Get album management view (requires auth + ownership)
 albumRoutes.get('/:slug/manage', requireAuth, async (c) => {
   const email = c.get('userEmail');
-  const slug = c.req.param('slug');
+  const slug = c.req.param('slug') as string;
 
   const album = await c.env.DB.prepare(
     'SELECT * FROM albums WHERE slug = ? AND owner_email = ?'
@@ -259,6 +261,7 @@ albumRoutes.get('/:slug/manage', requireAuth, async (c) => {
 
   return c.json({
     ...album,
+    background_url: backgroundUrlFor(slug, album.background_key),
     asset_token: albumAssetToken,
     uploads: uploads.results.filter((upload) => typeof upload.file_size === 'number'),
   });
@@ -508,7 +511,7 @@ albumRoutes.put('/:slug', requireAuth, async (c) => {
 // Upload background image (requires auth + ownership)
 albumRoutes.post('/:slug/background', requireAuth, async (c) => {
   const email = c.get('userEmail');
-  const slug = c.req.param('slug');
+  const slug = c.req.param('slug') as string;
 
   const album = await c.env.DB.prepare(
     'SELECT id, background_key FROM albums WHERE slug = ? AND owner_email = ?'
@@ -524,8 +527,12 @@ albumRoutes.post('/:slug/background', requireAuth, async (c) => {
     return c.json({ error: 'No file provided' }, 400);
   }
 
-  if (!isValidImageType(file.type)) {
-    return c.json({ error: 'Unsupported image type' }, 400);
+  if (!BACKGROUND_IMAGE_TYPES.has(file.type)) {
+    return c.json({ error: 'Please use a JPEG, PNG, WebP, GIF, or AVIF image' }, 400);
+  }
+
+  if (file.size > MAX_BACKGROUND_SIZE) {
+    return c.json({ error: `Image too large. Max ${MAX_BACKGROUND_SIZE / 1024 / 1024}MB` }, 413);
   }
 
   // Delete old background if exists
@@ -541,6 +548,29 @@ albumRoutes.post('/:slug/background', requireAuth, async (c) => {
   await c.env.DB.prepare(
     "UPDATE albums SET background_key = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(key, album.id).run();
+
+  return c.json({ ok: true, background_url: backgroundUrlFor(slug, key) });
+});
+
+// Remove background image (requires auth + ownership)
+albumRoutes.delete('/:slug/background', requireAuth, async (c) => {
+  const email = c.get('userEmail');
+  const slug = c.req.param('slug') as string;
+
+  const album = await c.env.DB.prepare(
+    'SELECT id, background_key FROM albums WHERE slug = ? AND owner_email = ?'
+  ).bind(slug, email).first<{ id: string; background_key: string | null }>();
+
+  if (!album) {
+    return c.json({ error: 'Album not found or not owned by you' }, 404);
+  }
+
+  if (album.background_key) {
+    await c.env.PHOTOS.delete(album.background_key);
+    await c.env.DB.prepare(
+      "UPDATE albums SET background_key = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(null, album.id).run();
+  }
 
   return c.json({ ok: true });
 });

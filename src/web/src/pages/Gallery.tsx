@@ -1,6 +1,6 @@
-import { useEffect, useState, lazy, Suspense } from 'react';
+import { useEffect, useRef, useState, lazy, Suspense } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { api, isLoggedIn, clearToken } from '../lib/api';
+import { api, assetUrl, isLoggedIn, clearToken } from '../lib/api';
 import { ModeToggleButton } from '../components/ModeToggleButton';
 import { PhotoGrid } from '../components/PhotoGrid';
 
@@ -21,6 +21,7 @@ type AlbumData = {
   is_open: number;
   is_viewable: number;
   welcome_text: string | null;
+  background_url: string | null;
   asset_token: string;
   uploads: Photo[];
 };
@@ -42,6 +43,8 @@ export function Gallery() {
   const [selectedPhotos, setSelectedPhotos] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState('');
+  const [coverUploading, setCoverUploading] = useState(false);
+  const coverInputRef = useRef<HTMLInputElement>(null);
 
   const isOwner = isLoggedIn() && album !== null;
   const uploadUrl = `${window.location.origin}/a/${slug}`;
@@ -125,6 +128,30 @@ export function Gallery() {
       setAlbum((prev) => prev ? { ...prev, is_viewable: newState ? 1 : 0 } : null);
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to update');
+    }
+  };
+
+  const handleCoverFile = async (file: File | undefined) => {
+    if (!slug || !file) return;
+    setCoverUploading(true);
+    try {
+      const { background_url } = await api.uploadBackground(slug, file);
+      setAlbum((prev) => prev ? { ...prev, background_url } : null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to upload gallery image');
+    } finally {
+      setCoverUploading(false);
+      if (coverInputRef.current) coverInputRef.current.value = '';
+    }
+  };
+
+  const handleRemoveCover = async () => {
+    if (!slug || !confirm('Remove the gallery image?')) return;
+    try {
+      await api.deleteBackground(slug);
+      setAlbum((prev) => prev ? { ...prev, background_url: null } : null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to remove gallery image');
     }
   };
 
@@ -288,6 +315,36 @@ export function Gallery() {
         </div>
         </Suspense>
       )}
+
+      <div className="cover-section">
+        {album.background_url && (
+          <img className="cover-preview" src={assetUrl(album.background_url)} alt="Gallery image" />
+        )}
+        <div className="cover-controls">
+          <button
+            className="btn btn-secondary btn-compact"
+            disabled={coverUploading}
+            onClick={() => coverInputRef.current?.click()}
+          >
+            {coverUploading
+              ? 'Uploading...'
+              : album.background_url ? 'Change gallery image' : 'Add gallery image'}
+          </button>
+          {album.background_url && !coverUploading && (
+            <button className="btn btn-secondary btn-compact" onClick={handleRemoveCover}>
+              Remove
+            </button>
+          )}
+          <span className="cover-hint">Shown at the top of the guest gallery.</span>
+        </div>
+        <input
+          ref={coverInputRef}
+          type="file"
+          accept="image/jpeg,image/png,image/webp,image/gif,image/avif"
+          style={{ display: 'none' }}
+          onChange={(e) => void handleCoverFile(e.currentTarget.files?.[0])}
+        />
+      </div>
 
       <PhotoGrid
         photos={album.uploads}

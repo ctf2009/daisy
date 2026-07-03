@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { api } from '../lib/api';
+import { api, assetUrl } from '../lib/api';
 import { CodeEntry } from '../components/CodeEntry';
 import { FileUploader } from '../components/FileUploader';
 import { ModeToggleButton } from '../components/ModeToggleButton';
@@ -152,10 +152,18 @@ export function Upload() {
     return <div className="page-center"><p className="error">Album not found</p></div>;
   }
 
+  const galleryHero = (size: 'large' | 'small') =>
+    album.background_url ? (
+      <div className={`gallery-hero gallery-hero-${size}`}>
+        <img src={assetUrl(album.background_url)} alt="" />
+      </div>
+    ) : null;
+
   // Nothing available
   if (!album.is_open && !album.is_viewable) {
     return (
       <div className="page-center">
+        {galleryHero('large')}
         <h1>{album.welcome_text || album.name}</h1>
         <p className="upload-closed">This album is not currently available.</p>
       </div>
@@ -179,6 +187,7 @@ export function Upload() {
     return (
       <div className="upload-page">
         <div className="upload-container">
+          {galleryHero('large')}
           <h1>{album.welcome_text || album.name}</h1>
           <p className="upload-intro">
             Select photos from your device to share with everyone.
@@ -193,6 +202,7 @@ export function Upload() {
   // Gallery view (viewable, optionally with upload)
   return (
     <div className="guest-page">
+      {galleryHero(photos.length === 0 ? 'large' : 'small')}
       <div className="guest-page-header">
         <h1>{album.welcome_text || album.name}</h1>
         {album.is_viewable && (

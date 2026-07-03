@@ -8,6 +8,12 @@ function getToken(): string | null {
   return localStorage.getItem('daisy_token');
 }
 
+// Resolve an API-relative asset path (e.g. background_url) against the API
+// origin — in dev the web app and API run on different ports.
+export function assetUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
+
 export function setToken(token: string) {
   localStorage.setItem('daisy_token', token);
 }
@@ -105,6 +111,7 @@ export const api = {
       is_open: number;
       is_viewable: number;
       welcome_text: string | null;
+      background_url: string | null;
       asset_token: string;
       uploads: Array<{
         id: string;
@@ -135,11 +142,16 @@ export const api = {
   uploadBackground: (slug: string, file: File) => {
     const formData = new FormData();
     formData.append('file', file);
-    return request<{ ok: true }>(`/api/albums/${slug}/background`, {
+    return request<{ ok: true; background_url: string }>(`/api/albums/${slug}/background`, {
       method: 'POST',
       body: formData,
     });
   },
+
+  deleteBackground: (slug: string) =>
+    request<{ ok: true }>(`/api/albums/${slug}/background`, {
+      method: 'DELETE',
+    }),
 
   deleteUpload: (slug: string, uploadId: string) =>
     request<{ ok: true }>(`/api/albums/${slug}/uploads/${uploadId}`, {

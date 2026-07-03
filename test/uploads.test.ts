@@ -574,3 +574,90 @@ describe('DELETE /api/albums/:slug/uploads/:id', () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe('completed uploads are immutable', () => {
+  beforeEach(() => { bindings = createTestBindings(); });
+
+  async function uploadCompletedPhoto() {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Immutable Test');
+
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'locked.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]),
+    });
+
+    return { token, album, upload_id };
+  }
+
+  it('rejects re-uploading the file of a completed upload', async () => {
+    const { token, album, upload_id } = await uploadCompletedPhoto();
+
+    const overwriteRes = await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0x00, 0x01]),
+    });
+    expect(overwriteRes.status).toBe(409);
+
+    // Original content still intact
+    const assetToken = await getOwnerAlbumAssetToken(token, album.slug);
+    const getRes = await req(`/api/uploads/${upload_id}/photo?token=${encodeURIComponent(assetToken)}`);
+    const bytes = new Uint8Array(await getRes.arrayBuffer());
+    expect(Array.from(bytes)).toEqual([0xFF, 0xD8, 0xFF, 0xE0]);
+  });
+
+  it('rejects aborting a completed upload (must not delete the photo)', async () => {
+    const { token, album, upload_id } = await uploadCompletedPhoto();
+
+    const abortRes = await req(`/api/uploads/${upload_id}/abort`, { method: 'DELETE' });
+    expect(abortRes.status).toBe(409);
+
+    const assetToken = await getOwnerAlbumAssetToken(token, album.slug);
+    const getRes = await req(`/api/uploads/${upload_id}/photo?token=${encodeURIComponent(assetToken)}`);
+    expect(getRes.status).toBe(200);
+  });
+
+  it('rejects replacing an existing thumbnail', async () => {
+    const { upload_id } = await uploadCompletedPhoto();
+
+    const firstThumb = await req(`/api/uploads/${upload_id}/thumbnail`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xFF, 0xD8]),
+    });
+    expect(firstThumb.status).toBe(200);
+
+    const secondThumb = await req(`/api/uploads/${upload_id}/thumbnail`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0x00, 0x00]),
+    });
+    expect(secondThumb.status).toBe(409);
+  });
+
+  it('rejects oversize file uploads without deleting a completed photo', async () => {
+    const { token, album, upload_id } = await uploadCompletedPhoto();
+
+    const oversizeRes = await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Content-Length': String(50 * 1024 * 1024 + 1),
+      },
+      body: new Uint8Array([0xFF, 0xD8]),
+    });
+    expect(oversizeRes.status).toBe(409);
+
+    const assetToken = await getOwnerAlbumAssetToken(token, album.slug);
+    const getRes = await req(`/api/uploads/${upload_id}/photo?token=${encodeURIComponent(assetToken)}`);
+    expect(getRes.status).toBe(200);
+  });
+});
