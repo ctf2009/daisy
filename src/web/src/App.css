@@ -542,6 +542,59 @@
   padding: 28px 0 12px;
 }
 
+.upload-launcher-floating {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0;
+  z-index: 150;
+}
+
+/* Keep the last grid row visible above the floating button */
+.guest-page:has(.upload-launcher-floating) {
+  padding-bottom: 120px;
+}
+
+/* Upload Toast */
+.upload-toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 12px 24px;
+  border-radius: 999px;
+  background: var(--primary);
+  color: white;
+  font-size: 15px;
+  font-weight: 600;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+  z-index: 300;
+  animation: toast-in 0.25s ease;
+  white-space: nowrap;
+  max-width: calc(100vw - 32px);
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+/* Batch completion notice (inside uploader) */
+.batch-notice {
+  margin-top: 12px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--success);
+}
+
 .upload-launch-button {
   display: inline-flex;
   align-items: center;

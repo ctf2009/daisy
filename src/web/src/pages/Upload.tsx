@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { api, assetUrl } from '../lib/api';
 import { CodeEntry } from '../components/CodeEntry';
@@ -65,6 +65,23 @@ export function Upload() {
   const [selectedPhotos, setSelectedPhotos] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState('');
+  const [toast, setToast] = useState<string | null>(null);
+  const timersRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    return () => timersRef.current.forEach((t) => window.clearTimeout(t));
+  }, []);
+
+  // When every photo in a batch lands, give the uploader a moment to see
+  // the "all uploaded" state, then return them to the gallery with a toast.
+  const handleBatchComplete = ({ succeeded, failed }: { succeeded: number; failed: number }) => {
+    if (failed > 0 || succeeded === 0) return;
+    timersRef.current.push(window.setTimeout(() => {
+      setShowUploadModal(false);
+      setToast(`${succeeded} photo${succeeded !== 1 ? 's' : ''} added — thank you!`);
+      timersRef.current.push(window.setTimeout(() => setToast(null), 4000));
+    }, 1400));
+  };
 
   const loadPhotos = async () => {
     if (!slug) return;
@@ -259,10 +276,14 @@ export function Upload() {
         />
       )}
 
+      {toast && <div className="upload-toast">{toast}</div>}
+
       {/* Upload CTA + Modal */}
       {album.is_open && (
         <>
-          <div className="upload-launcher">
+          {/* With photos in the gallery the button floats over the page so
+              guests never have to scroll to find it */}
+          <div className={`upload-launcher${photos.length > 0 ? ' upload-launcher-floating' : ''}`}>
             <button
               className="upload-launch-button"
               onClick={() => setShowUploadModal(true)}
@@ -291,6 +312,7 @@ export function Upload() {
                   onUploadComplete={() => {
                     loadPhotos();
                   }}
+                  onBatchComplete={handleBatchComplete}
                 />
                 <TroubleshootingHelp />
               </div>

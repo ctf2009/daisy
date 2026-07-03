@@ -22,6 +22,7 @@ type Props = {
   slug: string;
   accessCode?: string;
   onUploadComplete?: () => void;
+  onBatchComplete?: (result: { succeeded: number; failed: number }) => void;
 };
 
 const UNSUPPORTED_IMAGE_MESSAGE =
@@ -43,10 +44,11 @@ function normalizeImageFile(file: File): File {
   });
 }
 
-export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
+export function FileUploader({ slug, accessCode, onUploadComplete, onBatchComplete }: Props) {
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [selectionNotice, setSelectionNotice] = useState<string | null>(null);
+  const [batchNotice, setBatchNotice] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const updateItem = (id: string, updates: Partial<UploadItem>) => {
@@ -55,7 +57,7 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
     );
   };
 
-  const processFile = async (item: UploadItem) => {
+  const processFile = async (item: UploadItem): Promise<'done' | 'error'> => {
     try {
       updateItem(item.id, { status: 'converting' });
       await ensureFileReady(item.file);
@@ -79,7 +81,7 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
 
       if (result.duplicate) {
         updateItem(item.id, { status: 'done', progress: 100, error: 'Already uploaded' });
-        return;
+        return 'done';
       }
 
       // Multipart upload via Uppy (chunked, with retries)
@@ -95,11 +97,13 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
       await api.uploadThumbnail(result.upload_id!, thumbnail);
 
       updateItem(item.id, { status: 'done', progress: 100 });
+      return 'done';
     } catch (err) {
       updateItem(item.id, {
         status: 'error',
         error: err instanceof Error ? err.message : 'Upload failed',
       });
+      return 'error';
     }
   };
 
@@ -126,6 +130,8 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
       return;
     }
 
+    setBatchNotice(null);
+
     const newItems: UploadItem[] = fileArray.map((file) => ({
       id: crypto.randomUUID(),
       file,
@@ -138,11 +144,12 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
     // Process uploads concurrently (max 3 at a time)
     const queue = [...newItems];
     const concurrency = 3;
+    const results: Array<'done' | 'error'> = [];
 
     const runNext = async () => {
       const item = queue.shift();
       if (!item) return;
-      await processFile(item);
+      results.push(await processFile(item));
       await runNext();
     };
 
@@ -150,7 +157,16 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
       Array.from({ length: Math.min(concurrency, queue.length) }, () => runNext())
     );
 
+    const failed = results.filter((r) => r === 'error').length;
+    const succeeded = results.length - failed;
+    setBatchNotice(
+      failed === 0
+        ? `All ${succeeded} photo${succeeded !== 1 ? 's' : ''} uploaded 🎉`
+        : `${succeeded} uploaded, ${failed} failed — check below and try again`
+    );
+
     onUploadComplete?.();
+    onBatchComplete?.({ succeeded, failed });
   };
 
   const handleInputChange = (input: HTMLInputElement) => {
@@ -209,6 +225,8 @@ export function FileUploader({ slug, accessCode, onUploadComplete }: Props) {
       </div>
 
       {selectionNotice && <p className="drop-hint">{selectionNotice}</p>}
+
+      {batchNotice && <p className="batch-notice">{batchNotice}</p>}
 
       {uploads.length > 0 && (
         <div className="upload-list">
