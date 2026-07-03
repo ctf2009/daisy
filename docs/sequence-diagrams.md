@@ -33,11 +33,49 @@ sequenceDiagram
     W->>R2: complete(parts)
     R2-->>W: Final object
     W->>D1: UPDATE file_size, clear parts
+    Note over W,D1: file_size set → upload is now immutable<br/>(file/abort endpoints reject it from here on)
     W-->>G: {ok: true}
 
     G->>W: PUT /uploads/:id/thumbnail (JPEG)
-    W->>R2: put(thumbnail_key, bytes)
-    W-->>G: {ok: true}
+    W->>R2: head(thumbnail_key)
+    alt Thumbnail already exists
+        W-->>G: 409 (write-once)
+    else First write
+        W->>R2: put(thumbnail_key, bytes)
+        W-->>G: {ok: true}
+    end
+```
+
+## Completed photos are immutable (abuse paths blocked)
+
+Photo ids are visible to anyone who can view the gallery, and the upload
+lifecycle endpoints are unauthenticated by design (guests upload anonymously).
+The boundary is `file_size`: `NULL` = in-flight upload (writable by its
+uploader), set = live photo (immutable; only the owner's authenticated
+`DELETE /albums/:slug/uploads/:id` can remove it).
+
+```mermaid
+sequenceDiagram
+    participant V as Gallery viewer (attacker)
+    participant W as Worker
+    participant D1 as D1 Database
+
+    Note over V: Knows photo ids from GET /albums/:slug/photos
+
+    V->>W: PUT /uploads/:id/file (replacement bytes)
+    W->>D1: SELECT file_size
+    Note over W: file_size set → completed
+    W-->>V: 409 Upload already completed (photo untouched)
+
+    V->>W: DELETE /uploads/:id/abort
+    W->>D1: SELECT file_size, multipart_upload_id
+    W-->>V: 409 Upload already completed (nothing deleted)
+
+    V->>W: PUT /uploads/:id/thumbnail (replacement bytes)
+    W->>W: R2 head(thumbnail_key) → exists
+    W-->>V: 409 Thumbnail already uploaded
+
+    Note over V,W: In-flight uploads are unaffected: their ids are only<br/>known to the uploading browser (photos listing filters<br/>to completed uploads), and abort/retry still work for them
 ```
 
 ## Owner downloads all photos
