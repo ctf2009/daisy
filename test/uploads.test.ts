@@ -328,6 +328,66 @@ describe('multipart upload endpoints', () => {
     expect(listAfterCompleteRes.status).toBe(404);
   });
 
+  it('completes when total_size matches the assembled object', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Size Match Test');
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'sized.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    await req(`/api/uploads/${upload_id}/part/1`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array([1, 2, 3, 4, 5]),
+    });
+    const listed = await (await req(`/api/uploads/${upload_id}/parts`)).json() as {
+      parts: Array<{ PartNumber: number; ETag: string }>;
+    };
+
+    const res = await req(`/api/uploads/${upload_id}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parts: listed.parts, total_size: 5 }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects complete when the assembled object is smaller than total_size', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Size Mismatch Test');
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'short.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    await req(`/api/uploads/${upload_id}/part/1`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array([1, 2, 3]),
+    });
+    const listed = await (await req(`/api/uploads/${upload_id}/parts`)).json() as {
+      parts: Array<{ PartNumber: number; ETag: string }>;
+    };
+
+    // Client meant to upload 10 bytes but only 3 assembled — a part was lost.
+    const res = await req(`/api/uploads/${upload_id}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parts: listed.parts, total_size: 10 }),
+    });
+    expect(res.status).toBe(422);
+    expect((await res.json() as { code?: string }).code).toBe('size_mismatch');
+
+    // The bad object + reservation are cleaned up so the client can re-upload.
+    const photoRes = await req(`/api/uploads/${upload_id}/photo`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(photoRes.status).toBe(404);
+  });
+
   it('rejects a multipart part truncated in transit and does not store it', async () => {
     const token = await getToken();
     const album = await createAlbum(token, 'Truncated Part Test');

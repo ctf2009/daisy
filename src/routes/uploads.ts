@@ -187,9 +187,10 @@ uploadRoutes.put('/uploads/:uploadId/file', async (c) => {
 
   // A short read means the transfer was cut off. Don't persist a truncated
   // photo. Leave the reservation intact (file_size stays null) so the client
-  // can retry this PUT against the same upload id.
+  // can retry this PUT against the same upload id. The `code` lets the client
+  // recognise this as a retryable truncation rather than a permanent 4xx.
   if (contentLength > 0 && arrayBuf.byteLength !== contentLength) {
-    return c.json({ error: 'Incomplete upload: received bytes do not match Content-Length' }, 400);
+    return c.json({ error: 'Incomplete upload: received bytes do not match Content-Length', code: 'incomplete_upload' }, 400);
   }
 
   try {
@@ -242,9 +243,10 @@ uploadRoutes.put('/uploads/:uploadId/part/:partNumber', async (c) => {
   // Storing this part anyway would silently truncate the photo — the client
   // gets a 2xx + ETag, believes the part succeeded, and never retries. Fail
   // loudly so the uploader retries this part. (A saturated venue network at
-  // peak upload is exactly how a block of photos got half-saved.)
+  // peak upload is exactly how a block of photos got half-saved.) The `code`
+  // lets the client recognise this as a retryable truncation, not a permanent 4xx.
   if (contentLength > 0 && arrayBuf.byteLength !== contentLength) {
-    return c.json({ error: 'Incomplete part: received bytes do not match Content-Length' }, 400);
+    return c.json({ error: 'Incomplete part: received bytes do not match Content-Length', code: 'incomplete_upload' }, 400);
   }
 
   const multipart = c.env.PHOTOS.resumeMultipartUpload(upload.r2_key, upload.multipart_upload_id);
@@ -293,6 +295,7 @@ uploadRoutes.post('/uploads/:uploadId/complete', async (c) => {
   const uploadId = c.req.param('uploadId');
   const body = await c.req.json<{
     parts: Array<{ partNumber?: number; PartNumber?: number; etag?: string; ETag?: string }>;
+    total_size?: number;
   }>();
 
   if (!body.parts?.length) {
@@ -320,6 +323,18 @@ uploadRoutes.post('/uploads/:uploadId/complete', async (c) => {
   const obj = await multipart.complete(
     normalizedParts.sort((a, b) => a.partNumber - b.partNumber)
   );
+
+  // End-to-end integrity check: the assembled object must match the total the
+  // client set out to upload. If a part was silently dropped/short despite the
+  // per-part guard, obj.size < total_size — reject and clean up rather than
+  // finalise a truncated photo. Only enforced when the client sends total_size.
+  if (typeof body.total_size === 'number' && body.total_size > 0 && obj.size !== body.total_size) {
+    await deleteUploadRecord(c, uploadId);
+    return c.json({
+      error: `Assembled size ${obj.size} does not match expected ${body.total_size}`,
+      code: 'size_mismatch',
+    }, 422);
+  }
 
   await c.env.DB.prepare(
     'UPDATE uploads SET file_size = ?, multipart_upload_id = ? WHERE id = ?'
