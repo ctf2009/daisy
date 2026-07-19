@@ -185,6 +185,13 @@ uploadRoutes.put('/uploads/:uploadId/file', async (c) => {
     return c.json({ error: `File too large. Max ${MAX_PHOTO_SIZE / 1024 / 1024}MB` }, 413);
   }
 
+  // A short read means the transfer was cut off. Don't persist a truncated
+  // photo. Leave the reservation intact (file_size stays null) so the client
+  // can retry this PUT against the same upload id.
+  if (contentLength > 0 && arrayBuf.byteLength !== contentLength) {
+    return c.json({ error: 'Incomplete upload: received bytes do not match Content-Length' }, 400);
+  }
+
   try {
     await c.env.PHOTOS.put(upload.r2_key, arrayBuf, {
       httpMetadata: { contentType: upload.content_type },
@@ -229,6 +236,16 @@ uploadRoutes.put('/uploads/:uploadId/part/:partNumber', async (c) => {
   }
 
   const arrayBuf = await c.req.arrayBuffer();
+
+  // Reject a short read. If the bytes we actually received don't match the
+  // Content-Length the client promised, the connection was cut mid-transfer.
+  // Storing this part anyway would silently truncate the photo — the client
+  // gets a 2xx + ETag, believes the part succeeded, and never retries. Fail
+  // loudly so the uploader retries this part. (A saturated venue network at
+  // peak upload is exactly how a block of photos got half-saved.)
+  if (contentLength > 0 && arrayBuf.byteLength !== contentLength) {
+    return c.json({ error: 'Incomplete part: received bytes do not match Content-Length' }, 400);
+  }
 
   const multipart = c.env.PHOTOS.resumeMultipartUpload(upload.r2_key, upload.multipart_upload_id);
   const part = await multipart.uploadPart(partNumber, arrayBuf);

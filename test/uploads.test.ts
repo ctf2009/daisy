@@ -217,6 +217,34 @@ describe('PUT /api/uploads/:id/file', () => {
     expect(res.status).toBe(404);
   });
 
+  it('rejects a truncated file upload and keeps the slot retryable', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Truncated File Test');
+
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'cut.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    // Client promised 10 bytes but the connection died after 3 — a truncated
+    // transfer. This must be rejected, not silently stored as a half photo.
+    const cutRes = await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg', 'Content-Length': '10' },
+      body: new Uint8Array([0xFF, 0xD8, 0x00]),
+    });
+    expect(cutRes.status).toBe(400);
+
+    // The slot survives so the client can retry the full upload against it.
+    const retryRes = await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xFF, 0xD8, 0xFF, 0xD9]),
+    });
+    expect(retryRes.status).toBe(200);
+  });
+
   it('rejects direct photo access without an asset token', async () => {
     const token = await getToken();
     const album = await createAlbum(token, 'Protected Asset');
@@ -298,6 +326,30 @@ describe('multipart upload endpoints', () => {
 
     const listAfterCompleteRes = await req(`/api/uploads/${upload_id}/parts`);
     expect(listAfterCompleteRes.status).toBe(404);
+  });
+
+  it('rejects a multipart part truncated in transit and does not store it', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Truncated Part Test');
+
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'cut.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    // Body is 3 bytes but the client claims 10 — the chunk was cut off.
+    const res = await req(`/api/uploads/${upload_id}/part/1`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '10' },
+      body: new Uint8Array([1, 2, 3]),
+    });
+    expect(res.status).toBe(400);
+
+    // The short part must not have been recorded, so it can't be completed.
+    const listRes = await req(`/api/uploads/${upload_id}/parts`);
+    const listed = await listRes.json() as { parts: unknown[] };
+    expect(listed.parts).toHaveLength(0);
   });
 
   it('aborts multipart uploads and removes the placeholder upload', async () => {
