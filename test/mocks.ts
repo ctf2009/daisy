@@ -140,6 +140,7 @@ export function createMockD1(): D1Database {
     uploads: [],
     upload_parts: [],
     login_attempts: [],
+    guest_access_attempts: [],
   };
 
   function runQuery(sql: string, params: unknown[]): { results: Row[]; changes: number } {
@@ -157,6 +158,7 @@ export function createMockD1(): D1Database {
       // Set defaults
       if (row.is_open === undefined && table === 'albums') row.is_open = 1;
       if (row.is_viewable === undefined && table === 'albums') row.is_viewable = 0;
+      if (row.asset_policy_version === undefined && table === 'albums') row.asset_policy_version = 0;
       if (!row.created_at) row.created_at = new Date().toISOString();
       if (!row.updated_at) row.updated_at = new Date().toISOString();
       if (!row.uploaded_at) row.uploaded_at = new Date().toISOString();
@@ -235,6 +237,11 @@ export function createMockD1(): D1Database {
               return row[notNullMatch[1]] !== null && row[notNullMatch[1]] !== undefined;
             }
 
+            const nullMatch = cond.trim().match(/(\w+)\s+IS\s+NULL/i);
+            if (nullMatch) {
+              return row[nullMatch[1]] === null || row[nullMatch[1]] === undefined;
+            }
+
             const m = cond.trim().match(/(\w+)\s*=\s*\?/);
             if (m) {
               const val = params[paramIdx++];
@@ -284,6 +291,12 @@ export function createMockD1(): D1Database {
           const match = assignment.match(/^(\w+)\s*=\s*\?$/);
           if (match) {
             row[match[1]] = params[index];
+            return;
+          }
+
+          const incrementMatch = assignment.match(/^(\w+)\s*=\s*\1\s*\+\s*\?$/);
+          if (incrementMatch) {
+            row[incrementMatch[1]] = Number(row[incrementMatch[1]] || 0) + Number(params[index]);
           }
         });
         row.updated_at = new Date().toISOString();

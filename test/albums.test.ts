@@ -584,6 +584,33 @@ describe('whole-album download (guest + owner)', () => {
     expect(zipRes.headers.get('Content-Type')).toBe('application/zip');
   });
 
+  it('invalidates gallery and download capabilities after the owner hides the album', async () => {
+    const { token, slug, asset_token } = await seedViewableAlbumWithPhoto();
+    const tokenRes = await req(`/api/albums/${slug}/download-all-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ asset_token }),
+    });
+    const { token: downloadToken } = await tokenRes.json() as { token: string };
+
+    const updateRes = await req(`/api/albums/${slug}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ is_viewable: false }),
+    });
+    expect(updateRes.status).toBe(200);
+
+    const mintRes = await req(`/api/albums/${slug}/download-all-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ asset_token }),
+    });
+    expect(mintRes.status).toBe(401);
+
+    const downloadRes = await req(`/api/albums/${slug}/download-all?token=${encodeURIComponent(downloadToken)}`);
+    expect(downloadRes.status).toBe(401);
+  });
+
   it('owner can download the whole album via bearer auth', async () => {
     const { token, slug } = await seedViewableAlbumWithPhoto();
 

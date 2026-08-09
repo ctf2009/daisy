@@ -566,6 +566,7 @@ albumRoutes.put('/:slug', requireAuth, async (c) => {
   const nextWelcomeText = welcome_text !== undefined ? welcome_text : album.welcome_text;
   const nextIsOpen = is_open !== undefined ? (is_open ? 1 : 0) : album.is_open;
   const nextIsViewable = is_viewable !== undefined ? (is_viewable ? 1 : 0) : album.is_viewable;
+  const accessPolicyChanged = nextAccessCode !== album.access_code || nextIsViewable !== album.is_viewable;
 
   await c.env.DB.prepare(
     `UPDATE albums SET
@@ -574,6 +575,7 @@ albumRoutes.put('/:slug', requireAuth, async (c) => {
       is_open = ?,
       is_viewable = ?,
       welcome_text = ?,
+      asset_policy_version = asset_policy_version + ?,
       updated_at = datetime('now')
      WHERE id = ?`
   ).bind(
@@ -582,6 +584,7 @@ albumRoutes.put('/:slug', requireAuth, async (c) => {
     nextIsOpen,
     nextIsViewable,
     nextWelcomeText,
+    accessPolicyChanged ? 1 : 0,
     album.id
   ).run();
 

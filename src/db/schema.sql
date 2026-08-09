@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS albums (
   access_code TEXT,
   is_open INTEGER NOT NULL DEFAULT 1,
   is_viewable INTEGER NOT NULL DEFAULT 0,
+  asset_policy_version INTEGER NOT NULL DEFAULT 0,
   welcome_text TEXT,
   background_key TEXT,
   owner_email TEXT NOT NULL,
@@ -42,6 +43,14 @@ CREATE TABLE IF NOT EXISTS login_attempts (
   last_attempt_ms INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS guest_access_attempts (
+  id TEXT PRIMARY KEY,
+  album_id TEXT NOT NULL REFERENCES albums(id),
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_attempt_ms INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_albums_slug ON albums(slug);
 CREATE INDEX IF NOT EXISTS idx_uploads_album_id ON uploads(album_id);
 CREATE INDEX IF NOT EXISTS idx_albums_owner_email ON albums(owner_email);
+CREATE INDEX IF NOT EXISTS idx_guest_access_attempts_album_id ON guest_access_attempts(album_id);

@@ -113,6 +113,46 @@ describe('POST /api/albums/:slug/upload', () => {
     expect(res.status).toBe(403);
   });
 
+  it('rate-limits repeated incorrect access codes', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Protected Rate Limit', 'correct');
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const res = await requestUpload(album.slug, {
+        content_type: 'image/jpeg',
+        filename: 'photo.jpg',
+        access_code: 'wrong',
+      });
+      expect(res.status).toBe(403);
+    }
+
+    const limited = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'photo.jpg',
+      access_code: 'correct',
+    });
+    expect(limited.status).toBe(429);
+  });
+
+  it('caps pending reservations for a public album', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Reservation Cap');
+
+    for (let reservation = 0; reservation < 200; reservation++) {
+      const res = await requestUpload(album.slug, {
+        content_type: 'image/jpeg',
+        filename: `photo-${reservation}.jpg`,
+      });
+      expect(res.status).toBe(200);
+    }
+
+    const limited = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'one-too-many.jpg',
+    });
+    expect(limited.status).toBe(429);
+  });
+
   it('returns 404 for non-existent album', async () => {
     const res = await requestUpload('no-such-album', {
       content_type: 'image/jpeg',
@@ -410,6 +450,24 @@ describe('multipart upload endpoints', () => {
     const listRes = await req(`/api/uploads/${upload_id}/parts`);
     const listed = await listRes.json() as { parts: unknown[] };
     expect(listed.parts).toHaveLength(0);
+  });
+
+  it('rejects an oversized multipart body despite a misleading Content-Length', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Actual Multipart Size');
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'large.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    const res = await req(`/api/uploads/${upload_id}/part/1`, {
+      method: 'PUT',
+      headers: { 'Content-Length': '1' },
+      body: new Uint8Array(10 * 1024 * 1024 + 1),
+    });
+
+    expect(res.status).toBe(413);
   });
 
   it('aborts multipart uploads and removes the placeholder upload', async () => {
