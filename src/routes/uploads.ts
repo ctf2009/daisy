@@ -6,24 +6,36 @@ import {
   verifyAlbumAssetsToken,
   verifyAuthToken,
 } from '../lib/auth';
+import { authorizeGuestAlbumAccess } from '../lib/guest-access';
 import { generateId } from '../lib/tokens';
 import { getPhotoKey, getThumbnailKey, getExtFromContentType } from '../lib/r2';
-import { validateAccessCode, isValidImageType, sanitizeFilename } from '../lib/validation';
+import { isValidImageType, sanitizeFilename } from '../lib/validation';
 
 const MAX_PHOTO_SIZE = 50 * 1024 * 1024; // 50MB (accommodates ProRAW/DNG)
 const MAX_THUMB_SIZE = 500 * 1024;       // 500KB
 const MAX_PART_SIZE = 10 * 1024 * 1024;  // 10MB per multipart chunk
+const MAX_MULTIPART_PARTS = Math.ceil(MAX_PHOTO_SIZE / MAX_PART_SIZE);
+const MAX_PENDING_UPLOADS_PER_ALBUM = 200;
+const PENDING_UPLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 const ASSET_CACHE_CONTROL = 'private, max-age=21600';
 
 export const uploadRoutes = new Hono<{ Bindings: Bindings }>();
 
 async function deleteUploadRecord(c: { env: Bindings }, uploadId: string) {
   const upload = await c.env.DB.prepare(
-    'SELECT r2_key, thumbnail_key FROM uploads WHERE id = ?'
-  ).bind(uploadId).first<{ r2_key: string; thumbnail_key: string }>();
+    'SELECT r2_key, thumbnail_key, multipart_upload_id FROM uploads WHERE id = ?'
+  ).bind(uploadId).first<{ r2_key: string; thumbnail_key: string; multipart_upload_id: string | null }>();
 
   if (!upload) {
     return;
+  }
+
+  if (upload.multipart_upload_id) {
+    try {
+      await c.env.PHOTOS.resumeMultipartUpload(upload.r2_key, upload.multipart_upload_id).abort();
+    } catch {
+      // R2 may already have expired, aborted, or completed this multipart upload.
+    }
   }
 
   await Promise.all([
@@ -32,6 +44,22 @@ async function deleteUploadRecord(c: { env: Bindings }, uploadId: string) {
     c.env.DB.prepare('DELETE FROM upload_parts WHERE upload_id = ?').bind(uploadId).run(),
     c.env.DB.prepare('DELETE FROM uploads WHERE id = ?').bind(uploadId).run(),
   ]);
+}
+
+type PendingUpload = {
+  id: string;
+  uploaded_at: string;
+};
+
+async function removeExpiredPendingUploads(c: { env: Bindings }, albumId: string): Promise<number> {
+  const pending = await c.env.DB.prepare(
+    'SELECT id, uploaded_at FROM uploads WHERE album_id = ? AND file_size IS NULL'
+  ).bind(albumId).all<PendingUpload>();
+  const cutoff = Date.now() - PENDING_UPLOAD_TTL_MS;
+  const expired = pending.results.filter((upload) => Date.parse(upload.uploaded_at) < cutoff);
+
+  await Promise.all(expired.map((upload) => deleteUploadRecord(c, upload.id)));
+  return pending.results.length - expired.length;
 }
 
 async function saveUploadedPart(
@@ -109,8 +137,23 @@ uploadRoutes.post('/albums/:slug/upload', async (c) => {
     return c.json({ error: 'This album is no longer accepting photos' }, 403);
   }
 
-  if (!validateAccessCode(album.access_code, access_code)) {
+  const access = await authorizeGuestAlbumAccess(
+    c.env,
+    album.id,
+    album.access_code,
+    access_code,
+    c.req.header('CF-Connecting-IP') || 'unknown',
+  );
+  if (access === 'rate_limited') {
+    return c.json({ error: 'Too many invalid access code attempts. Try again later.' }, 429);
+  }
+  if (access === 'invalid_code') {
     return c.json({ error: 'Invalid access code' }, 403);
+  }
+
+  const pendingUploadCount = await removeExpiredPendingUploads(c, album.id);
+  if (pendingUploadCount >= MAX_PENDING_UPLOADS_PER_ALBUM) {
+    return c.json({ error: 'This album has too many pending uploads. Try again shortly.' }, 429);
   }
 
   // Check for duplicate
@@ -153,11 +196,17 @@ uploadRoutes.put('/uploads/:uploadId/file', async (c) => {
   const uploadId = c.req.param('uploadId');
 
   const upload = await c.env.DB.prepare(
-    'SELECT r2_key, content_type FROM uploads WHERE id = ?'
-  ).bind(uploadId).first<{ r2_key: string; content_type: string }>();
+    'SELECT r2_key, content_type, file_size, multipart_upload_id FROM uploads WHERE id = ?'
+  ).bind(uploadId).first<{ r2_key: string; content_type: string; file_size: number | null; multipart_upload_id: string | null }>();
 
   if (!upload) {
     return c.json({ error: 'Upload not found' }, 404);
+  }
+
+  // Completed uploads are immutable — photo ids are visible to gallery
+  // viewers, so an open write here would let anyone replace photos.
+  if (typeof upload.file_size === 'number') {
+    return c.json({ error: 'Upload already completed' }, 409);
   }
 
   const contentLength = parseInt(c.req.header('Content-Length') || '0');
@@ -179,14 +228,30 @@ uploadRoutes.put('/uploads/:uploadId/file', async (c) => {
     return c.json({ error: `File too large. Max ${MAX_PHOTO_SIZE / 1024 / 1024}MB` }, 413);
   }
 
+  // A short read means the transfer was cut off. Don't persist a truncated
+  // photo. Leave the reservation intact (file_size stays null) so the client
+  // can retry this PUT against the same upload id. The `code` lets the client
+  // recognise this as a retryable truncation rather than a permanent 4xx.
+  if (contentLength > 0 && arrayBuf.byteLength !== contentLength) {
+    return c.json({ error: 'Incomplete upload: received bytes do not match Content-Length', code: 'incomplete_upload' }, 400);
+  }
+
   try {
     await c.env.PHOTOS.put(upload.r2_key, arrayBuf, {
       httpMetadata: { contentType: upload.content_type },
     });
 
+    if (upload.multipart_upload_id) {
+      try {
+        await c.env.PHOTOS.resumeMultipartUpload(upload.r2_key, upload.multipart_upload_id).abort();
+      } catch {
+        // R2 may already have expired the unused multipart upload.
+      }
+    }
+
     await c.env.DB.prepare(
-      'UPDATE uploads SET file_size = ? WHERE id = ?'
-    ).bind(arrayBuf.byteLength, uploadId).run();
+      'UPDATE uploads SET file_size = ?, multipart_upload_id = ? WHERE id = ?'
+    ).bind(arrayBuf.byteLength, null, uploadId).run();
   } catch (err) {
     await deleteUploadRecord(c, uploadId);
     throw err;
@@ -200,7 +265,7 @@ uploadRoutes.put('/uploads/:uploadId/part/:partNumber', async (c) => {
   const uploadId = c.req.param('uploadId');
   const partNumber = parseInt(c.req.param('partNumber'));
 
-  if (!partNumber || partNumber < 1) {
+  if (!partNumber || partNumber < 1 || partNumber > MAX_MULTIPART_PARTS) {
     return c.json({ error: 'Invalid part number' }, 400);
   }
 
@@ -223,6 +288,20 @@ uploadRoutes.put('/uploads/:uploadId/part/:partNumber', async (c) => {
   }
 
   const arrayBuf = await c.req.arrayBuffer();
+  if (arrayBuf.byteLength > MAX_PART_SIZE) {
+    return c.json({ error: `Part too large. Max ${MAX_PART_SIZE / 1024 / 1024}MB` }, 413);
+  }
+
+  // Reject a short read. If the bytes we actually received don't match the
+  // Content-Length the client promised, the connection was cut mid-transfer.
+  // Storing this part anyway would silently truncate the photo — the client
+  // gets a 2xx + ETag, believes the part succeeded, and never retries. Fail
+  // loudly so the uploader retries this part. (A saturated venue network at
+  // peak upload is exactly how a block of photos got half-saved.) The `code`
+  // lets the client recognise this as a retryable truncation, not a permanent 4xx.
+  if (contentLength > 0 && arrayBuf.byteLength !== contentLength) {
+    return c.json({ error: 'Incomplete part: received bytes do not match Content-Length', code: 'incomplete_upload' }, 400);
+  }
 
   const multipart = c.env.PHOTOS.resumeMultipartUpload(upload.r2_key, upload.multipart_upload_id);
   const part = await multipart.uploadPart(partNumber, arrayBuf);
@@ -270,6 +349,7 @@ uploadRoutes.post('/uploads/:uploadId/complete', async (c) => {
   const uploadId = c.req.param('uploadId');
   const body = await c.req.json<{
     parts: Array<{ partNumber?: number; PartNumber?: number; etag?: string; ETag?: string }>;
+    total_size?: number;
   }>();
 
   if (!body.parts?.length) {
@@ -298,6 +378,23 @@ uploadRoutes.post('/uploads/:uploadId/complete', async (c) => {
     normalizedParts.sort((a, b) => a.partNumber - b.partNumber)
   );
 
+  if (obj.size > MAX_PHOTO_SIZE) {
+    await deleteUploadRecord(c, uploadId);
+    return c.json({ error: `File too large. Max ${MAX_PHOTO_SIZE / 1024 / 1024}MB` }, 413);
+  }
+
+  // End-to-end integrity check: the assembled object must match the total the
+  // client set out to upload. If a part was silently dropped/short despite the
+  // per-part guard, obj.size < total_size — reject and clean up rather than
+  // finalise a truncated photo. Only enforced when the client sends total_size.
+  if (typeof body.total_size === 'number' && body.total_size > 0 && obj.size !== body.total_size) {
+    await deleteUploadRecord(c, uploadId);
+    return c.json({
+      error: `Assembled size ${obj.size} does not match expected ${body.total_size}`,
+      code: 'size_mismatch',
+    }, 422);
+  }
+
   await c.env.DB.prepare(
     'UPDATE uploads SET file_size = ?, multipart_upload_id = ? WHERE id = ?'
   ).bind(obj.size, null, uploadId).run();
@@ -311,11 +408,16 @@ uploadRoutes.delete('/uploads/:uploadId/abort', async (c) => {
   const uploadId = c.req.param('uploadId');
 
   const upload = await c.env.DB.prepare(
-    'SELECT r2_key, multipart_upload_id FROM uploads WHERE id = ?'
-  ).bind(uploadId).first<{ r2_key: string; multipart_upload_id: string | null }>();
+    'SELECT r2_key, multipart_upload_id, file_size FROM uploads WHERE id = ?'
+  ).bind(uploadId).first<{ r2_key: string; multipart_upload_id: string | null; file_size: number | null }>();
 
   if (!upload) {
     return c.json({ error: 'Upload not found' }, 404);
+  }
+
+  // Never let an unauthenticated abort delete a completed photo.
+  if (typeof upload.file_size === 'number') {
+    return c.json({ error: 'Upload already completed' }, 409);
   }
 
   if (upload.multipart_upload_id) {
@@ -342,6 +444,13 @@ uploadRoutes.put('/uploads/:uploadId/thumbnail', async (c) => {
 
   if (!upload) {
     return c.json({ error: 'Upload not found' }, 404);
+  }
+
+  // Thumbnails are written once, right after the upload completes; an open
+  // rewrite would let gallery viewers replace them.
+  const existingThumbnail = await c.env.PHOTOS.head(upload.thumbnail_key);
+  if (existingThumbnail) {
+    return c.json({ error: 'Thumbnail already uploaded' }, 409);
   }
 
   const contentLength = parseInt(c.req.header('Content-Length') || '0');
@@ -457,8 +566,17 @@ uploadRoutes.get('/albums/:slug/photos', async (c) => {
     return c.json({ error: 'Album not found' }, 404);
   }
 
-  const hasValidCode = validateAccessCode(album.access_code, access_code);
-  if (album.access_code && !hasValidCode) {
+  const access = await authorizeGuestAlbumAccess(
+    c.env,
+    album.id,
+    album.access_code,
+    access_code,
+    c.req.header('CF-Connecting-IP') || 'unknown',
+  );
+  if (access === 'rate_limited') {
+    return c.json({ error: 'Too many invalid access code attempts. Try again later.' }, 429);
+  }
+  if (access === 'invalid_code') {
     return c.json({ error: 'Invalid access code' }, 403);
   }
 

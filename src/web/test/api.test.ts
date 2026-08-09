@@ -109,6 +109,26 @@ describe('upload helpers', () => {
     expect(clickSpy).toHaveBeenCalled();
   });
 
+  it('requests a whole-album download token with the asset token before redirecting', async () => {
+    vi.mocked(global.fetch).mockResolvedValue(
+      new Response(JSON.stringify({ token: 'full-download-token' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    );
+
+    await api.downloadAllPhotos('album-slug', 'asset-token');
+
+    expect(global.fetch).toHaveBeenCalledWith('http://localhost:8787/api/albums/album-slug/download-all-token', {
+      method: 'POST',
+      body: JSON.stringify({ asset_token: 'asset-token' }),
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+    expect(clickSpy).toHaveBeenCalled();
+  });
+
   it('builds tokenized asset URLs for photos and thumbnails', () => {
     const photo = { id: 'upload-1' };
 

@@ -113,6 +113,46 @@ describe('POST /api/albums/:slug/upload', () => {
     expect(res.status).toBe(403);
   });
 
+  it('rate-limits repeated incorrect access codes', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Protected Rate Limit', 'correct');
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const res = await requestUpload(album.slug, {
+        content_type: 'image/jpeg',
+        filename: 'photo.jpg',
+        access_code: 'wrong',
+      });
+      expect(res.status).toBe(403);
+    }
+
+    const limited = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'photo.jpg',
+      access_code: 'correct',
+    });
+    expect(limited.status).toBe(429);
+  });
+
+  it('caps pending reservations for a public album', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Reservation Cap');
+
+    for (let reservation = 0; reservation < 200; reservation++) {
+      const res = await requestUpload(album.slug, {
+        content_type: 'image/jpeg',
+        filename: `photo-${reservation}.jpg`,
+      });
+      expect(res.status).toBe(200);
+    }
+
+    const limited = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'one-too-many.jpg',
+    });
+    expect(limited.status).toBe(429);
+  });
+
   it('returns 404 for non-existent album', async () => {
     const res = await requestUpload('no-such-album', {
       content_type: 'image/jpeg',
@@ -217,6 +257,34 @@ describe('PUT /api/uploads/:id/file', () => {
     expect(res.status).toBe(404);
   });
 
+  it('rejects a truncated file upload and keeps the slot retryable', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Truncated File Test');
+
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'cut.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    // Client promised 10 bytes but the connection died after 3 — a truncated
+    // transfer. This must be rejected, not silently stored as a half photo.
+    const cutRes = await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg', 'Content-Length': '10' },
+      body: new Uint8Array([0xFF, 0xD8, 0x00]),
+    });
+    expect(cutRes.status).toBe(400);
+
+    // The slot survives so the client can retry the full upload against it.
+    const retryRes = await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xFF, 0xD8, 0xFF, 0xD9]),
+    });
+    expect(retryRes.status).toBe(200);
+  });
+
   it('rejects direct photo access without an asset token', async () => {
     const token = await getToken();
     const album = await createAlbum(token, 'Protected Asset');
@@ -298,6 +366,108 @@ describe('multipart upload endpoints', () => {
 
     const listAfterCompleteRes = await req(`/api/uploads/${upload_id}/parts`);
     expect(listAfterCompleteRes.status).toBe(404);
+  });
+
+  it('completes when total_size matches the assembled object', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Size Match Test');
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'sized.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    await req(`/api/uploads/${upload_id}/part/1`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array([1, 2, 3, 4, 5]),
+    });
+    const listed = await (await req(`/api/uploads/${upload_id}/parts`)).json() as {
+      parts: Array<{ PartNumber: number; ETag: string }>;
+    };
+
+    const res = await req(`/api/uploads/${upload_id}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parts: listed.parts, total_size: 5 }),
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects complete when the assembled object is smaller than total_size', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Size Mismatch Test');
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'short.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    await req(`/api/uploads/${upload_id}/part/1`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: new Uint8Array([1, 2, 3]),
+    });
+    const listed = await (await req(`/api/uploads/${upload_id}/parts`)).json() as {
+      parts: Array<{ PartNumber: number; ETag: string }>;
+    };
+
+    // Client meant to upload 10 bytes but only 3 assembled — a part was lost.
+    const res = await req(`/api/uploads/${upload_id}/complete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ parts: listed.parts, total_size: 10 }),
+    });
+    expect(res.status).toBe(422);
+    expect((await res.json() as { code?: string }).code).toBe('size_mismatch');
+
+    // The bad object + reservation are cleaned up so the client can re-upload.
+    const photoRes = await req(`/api/uploads/${upload_id}/photo`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(photoRes.status).toBe(404);
+  });
+
+  it('rejects a multipart part truncated in transit and does not store it', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Truncated Part Test');
+
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'cut.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    // Body is 3 bytes but the client claims 10 — the chunk was cut off.
+    const res = await req(`/api/uploads/${upload_id}/part/1`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': '10' },
+      body: new Uint8Array([1, 2, 3]),
+    });
+    expect(res.status).toBe(400);
+
+    // The short part must not have been recorded, so it can't be completed.
+    const listRes = await req(`/api/uploads/${upload_id}/parts`);
+    const listed = await listRes.json() as { parts: unknown[] };
+    expect(listed.parts).toHaveLength(0);
+  });
+
+  it('rejects an oversized multipart body despite a misleading Content-Length', async () => {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Actual Multipart Size');
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'large.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    const res = await req(`/api/uploads/${upload_id}/part/1`, {
+      method: 'PUT',
+      headers: { 'Content-Length': '1' },
+      body: new Uint8Array(10 * 1024 * 1024 + 1),
+    });
+
+    expect(res.status).toBe(413);
   });
 
   it('aborts multipart uploads and removes the placeholder upload', async () => {
@@ -572,5 +742,92 @@ describe('DELETE /api/albums/:slug/uploads/:id', () => {
       method: 'DELETE',
     });
     expect(res.status).toBe(401);
+  });
+});
+
+describe('completed uploads are immutable', () => {
+  beforeEach(() => { bindings = createTestBindings(); });
+
+  async function uploadCompletedPhoto() {
+    const token = await getToken();
+    const album = await createAlbum(token, 'Immutable Test');
+
+    const slotRes = await requestUpload(album.slug, {
+      content_type: 'image/jpeg',
+      filename: 'locked.jpg',
+    });
+    const { upload_id } = await slotRes.json() as { upload_id: string };
+
+    await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xFF, 0xD8, 0xFF, 0xE0]),
+    });
+
+    return { token, album, upload_id };
+  }
+
+  it('rejects re-uploading the file of a completed upload', async () => {
+    const { token, album, upload_id } = await uploadCompletedPhoto();
+
+    const overwriteRes = await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0x00, 0x01]),
+    });
+    expect(overwriteRes.status).toBe(409);
+
+    // Original content still intact
+    const assetToken = await getOwnerAlbumAssetToken(token, album.slug);
+    const getRes = await req(`/api/uploads/${upload_id}/photo?token=${encodeURIComponent(assetToken)}`);
+    const bytes = new Uint8Array(await getRes.arrayBuffer());
+    expect(Array.from(bytes)).toEqual([0xFF, 0xD8, 0xFF, 0xE0]);
+  });
+
+  it('rejects aborting a completed upload (must not delete the photo)', async () => {
+    const { token, album, upload_id } = await uploadCompletedPhoto();
+
+    const abortRes = await req(`/api/uploads/${upload_id}/abort`, { method: 'DELETE' });
+    expect(abortRes.status).toBe(409);
+
+    const assetToken = await getOwnerAlbumAssetToken(token, album.slug);
+    const getRes = await req(`/api/uploads/${upload_id}/photo?token=${encodeURIComponent(assetToken)}`);
+    expect(getRes.status).toBe(200);
+  });
+
+  it('rejects replacing an existing thumbnail', async () => {
+    const { upload_id } = await uploadCompletedPhoto();
+
+    const firstThumb = await req(`/api/uploads/${upload_id}/thumbnail`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0xFF, 0xD8]),
+    });
+    expect(firstThumb.status).toBe(200);
+
+    const secondThumb = await req(`/api/uploads/${upload_id}/thumbnail`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: new Uint8Array([0x00, 0x00]),
+    });
+    expect(secondThumb.status).toBe(409);
+  });
+
+  it('rejects oversize file uploads without deleting a completed photo', async () => {
+    const { token, album, upload_id } = await uploadCompletedPhoto();
+
+    const oversizeRes = await req(`/api/uploads/${upload_id}/file`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'image/jpeg',
+        'Content-Length': String(50 * 1024 * 1024 + 1),
+      },
+      body: new Uint8Array([0xFF, 0xD8]),
+    });
+    expect(oversizeRes.status).toBe(409);
+
+    const assetToken = await getOwnerAlbumAssetToken(token, album.slug);
+    const getRes = await req(`/api/uploads/${upload_id}/photo?token=${encodeURIComponent(assetToken)}`);
+    expect(getRes.status).toBe(200);
   });
 });

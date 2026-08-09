@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { api } from '../lib/api';
+import { api, assetUrl } from '../lib/api';
 import { CodeEntry } from '../components/CodeEntry';
 import { FileUploader } from '../components/FileUploader';
 import { ModeToggleButton } from '../components/ModeToggleButton';
@@ -65,6 +65,24 @@ export function Upload() {
   const [selectedPhotos, setSelectedPhotos] = useState<Set<string>>(new Set());
   const [downloading, setDownloading] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState('');
+  const [downloadingAll, setDownloadingAll] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const timersRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    return () => timersRef.current.forEach((t) => window.clearTimeout(t));
+  }, []);
+
+  // When every photo in a batch lands, give the uploader a moment to see
+  // the "all uploaded" state, then return them to the gallery with a toast.
+  const handleBatchComplete = ({ succeeded, failed }: { succeeded: number; failed: number }) => {
+    if (failed > 0 || succeeded === 0) return;
+    timersRef.current.push(window.setTimeout(() => {
+      setShowUploadModal(false);
+      setToast(`${succeeded} photo${succeeded !== 1 ? 's' : ''} added — thank you!`);
+      timersRef.current.push(window.setTimeout(() => setToast(null), 4000));
+    }, 1400));
+  };
 
   const loadPhotos = async () => {
     if (!slug) return;
@@ -106,6 +124,18 @@ export function Upload() {
       }
     } catch {
       setCodeError('Invalid access code');
+    }
+  };
+
+  const handleDownloadAll = async () => {
+    if (!slug) return;
+    setDownloadingAll(true);
+    try {
+      await api.downloadAllPhotos(slug, assetToken);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Download failed');
+    } finally {
+      setDownloadingAll(false);
     }
   };
 
@@ -152,10 +182,18 @@ export function Upload() {
     return <div className="page-center"><p className="error">Album not found</p></div>;
   }
 
+  const galleryHero = (size: 'large' | 'small') =>
+    album.background_url ? (
+      <div className={`gallery-hero gallery-hero-${size}`}>
+        <img src={assetUrl(album.background_url)} alt="" />
+      </div>
+    ) : null;
+
   // Nothing available
   if (!album.is_open && !album.is_viewable) {
     return (
       <div className="page-center">
+        {galleryHero('large')}
         <h1>{album.welcome_text || album.name}</h1>
         <p className="upload-closed">This album is not currently available.</p>
       </div>
@@ -179,6 +217,7 @@ export function Upload() {
     return (
       <div className="upload-page">
         <div className="upload-container">
+          {galleryHero('large')}
           <h1>{album.welcome_text || album.name}</h1>
           <p className="upload-intro">
             Select photos from your device to share with everyone.
@@ -193,6 +232,7 @@ export function Upload() {
   // Gallery view (viewable, optionally with upload)
   return (
     <div className="guest-page">
+      {galleryHero(photos.length === 0 ? 'large' : 'small')}
       <div className="guest-page-header">
         <h1>{album.welcome_text || album.name}</h1>
         {album.is_viewable && (
@@ -205,13 +245,22 @@ export function Upload() {
             {isSelecting ? (
               <ModeToggleButton mode="done" onClick={stopSelecting} />
             ) : (
-              <ModeToggleButton
-                mode="select"
-                onClick={() => {
-                  setSelectedPhotos(new Set());
-                  setIsSelecting(true);
-                }}
-              />
+              <>
+                <button
+                  className="btn btn-secondary btn-compact"
+                  disabled={downloadingAll}
+                  onClick={handleDownloadAll}
+                >
+                  {downloadingAll ? 'Preparing...' : 'Download all'}
+                </button>
+                <ModeToggleButton
+                  mode="select"
+                  onClick={() => {
+                    setSelectedPhotos(new Set());
+                    setIsSelecting(true);
+                  }}
+                />
+              </>
             )}
           </div>
         )}
@@ -249,10 +298,14 @@ export function Upload() {
         />
       )}
 
+      {toast && <div className="upload-toast">{toast}</div>}
+
       {/* Upload CTA + Modal */}
       {album.is_open && (
         <>
-          <div className="upload-launcher">
+          {/* With photos in the gallery the button floats over the page so
+              guests never have to scroll to find it */}
+          <div className={`upload-launcher${photos.length > 0 ? ' upload-launcher-floating' : ''}`}>
             <button
               className="upload-launch-button"
               onClick={() => setShowUploadModal(true)}
@@ -281,6 +334,7 @@ export function Upload() {
                   onUploadComplete={() => {
                     loadPhotos();
                   }}
+                  onBatchComplete={handleBatchComplete}
                 />
                 <TroubleshootingHelp />
               </div>

@@ -6,14 +6,15 @@ import {
   extractBearerToken,
   issueAlbumAssetsToken,
   issueDownloadToken,
+  issueFullDownloadToken,
   issueSelectedDownloadToken,
   verifyAuthToken,
   verifyAlbumAssetsToken,
   verifyDownloadToken,
+  verifyFullDownloadToken,
   verifySelectedDownloadToken,
 } from '../lib/auth';
 import { generateId, generateSlug } from '../lib/tokens';
-import { isValidImageType } from '../lib/validation';
 
 type Album = {
   id: string;
@@ -30,6 +31,18 @@ type Album = {
 };
 
 export const albumRoutes = new Hono<{ Bindings: Bindings; Variables: { userEmail: string } }>();
+
+// Background images are rendered directly by browsers, so only allow
+// web-displayable formats (no HEIC/TIFF/DNG like guest photo uploads).
+const BACKGROUND_IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif']);
+const MAX_BACKGROUND_SIZE = 10 * 1024 * 1024; // 10MB
+
+// Each upload gets a fresh key, so the key doubles as a cache-buster.
+function backgroundUrlFor(slug: string, backgroundKey: string | null): string | null {
+  if (!backgroundKey) return null;
+  const version = backgroundKey.split('/').pop()?.split('.')[0] || '';
+  return `/api/albums/${slug}/background?v=${version}`;
+}
 
 function toDownloadFilename(albumName: string): string {
   const safeName = albumName.replace(/[^a-zA-Z0-9_-]/g, '_') || 'album';
@@ -193,21 +206,11 @@ albumRoutes.get('/:slug', async (c) => {
     return c.json({ error: 'Album not found' }, 404);
   }
 
-  // Generate a signed URL for the background image if one exists
-  let backgroundUrl: string | null = null;
-  if (album.background_key) {
-    const obj = await c.env.PHOTOS.get(album.background_key);
-    if (obj) {
-      // For public access we'll serve it through the worker
-      backgroundUrl = `/api/albums/${slug}/background`;
-    }
-  }
-
   return c.json({
     name: album.name,
     slug: album.slug,
     welcome_text: album.welcome_text,
-    background_url: backgroundUrl,
+    background_url: backgroundUrlFor(slug, album.background_key),
     is_open: !!album.is_open,
     is_viewable: !!album.is_viewable,
     requires_code: !!album.access_code,
@@ -234,7 +237,8 @@ albumRoutes.get('/:slug/background', async (c) => {
 
   const headers = new Headers();
   headers.set('Content-Type', obj.httpMetadata?.contentType || 'image/jpeg');
-  headers.set('Cache-Control', 'public, max-age=3600');
+  // URLs are versioned per upload (?v=), so this can cache aggressively
+  headers.set('Cache-Control', 'public, max-age=86400');
 
   return new Response(obj.body, { headers });
 });
@@ -242,7 +246,7 @@ albumRoutes.get('/:slug/background', async (c) => {
 // Get album management view (requires auth + ownership)
 albumRoutes.get('/:slug/manage', requireAuth, async (c) => {
   const email = c.get('userEmail');
-  const slug = c.req.param('slug');
+  const slug = c.req.param('slug') as string;
 
   const album = await c.env.DB.prepare(
     'SELECT * FROM albums WHERE slug = ? AND owner_email = ?'
@@ -259,6 +263,7 @@ albumRoutes.get('/:slug/manage', requireAuth, async (c) => {
 
   return c.json({
     ...album,
+    background_url: backgroundUrlFor(slug, album.background_key),
     asset_token: albumAssetToken,
     uploads: uploads.results.filter((upload) => typeof upload.file_size === 'number'),
   });
@@ -328,6 +333,84 @@ albumRoutes.get('/:slug/download', async (c) => {
      WHERE album_id = ? AND file_size IS NOT NULL
      ORDER BY uploaded_at DESC`
   ).bind(album.id).all<{ id: string; original_filename: string | null; r2_key: string }>();
+
+  return createArchiveResponse(c, album.name, uploads.results);
+});
+
+// Mint a whole-album download token. Guests authorize with the album asset
+// token they already hold (same trust level as viewing the gallery); the
+// owner authorizes with their bearer token.
+albumRoutes.post('/:slug/download-all-token', async (c) => {
+  const slug = c.req.param('slug');
+  const { asset_token } = await c.req.json<{ asset_token?: string }>().catch(() => ({ asset_token: undefined }));
+
+  const album = await c.env.DB.prepare(
+    'SELECT owner_email FROM albums WHERE slug = ?'
+  ).bind(slug).first<{ owner_email: string }>();
+
+  if (!album) {
+    return c.json({ error: 'Album not found' }, 404);
+  }
+
+  const bearerToken = extractBearerToken(c.req.header('Authorization'));
+  let authorized = false;
+
+  if (bearerToken) {
+    try {
+      const { email } = await verifyAuthToken(bearerToken, c.env);
+      authorized = email === album.owner_email;
+    } catch {
+      authorized = false;
+    }
+  }
+
+  if (!authorized) {
+    if (!asset_token) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    try {
+      await verifyAlbumAssetsToken(asset_token, slug, c.env);
+      authorized = true;
+    } catch {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+  }
+
+  const token = await issueFullDownloadToken(slug, c.env);
+  return c.json({ token });
+});
+
+albumRoutes.get('/:slug/download-all', async (c) => {
+  const slug = c.req.param('slug');
+  const token = c.req.query('token');
+  if (!token) {
+    return c.json({ error: 'Unauthorized' }, 401);
+  }
+
+  try {
+    await verifyFullDownloadToken(token, slug, c.env);
+  } catch {
+    return c.json({ error: 'Invalid or expired token' }, 401);
+  }
+
+  const album = await c.env.DB.prepare(
+    'SELECT id, name FROM albums WHERE slug = ?'
+  ).bind(slug).first<{ id: string; name: string }>();
+
+  if (!album) {
+    return c.json({ error: 'Album not found' }, 404);
+  }
+
+  const uploads = await c.env.DB.prepare(
+    `SELECT id, original_filename, r2_key
+     FROM uploads
+     WHERE album_id = ? AND file_size IS NOT NULL
+     ORDER BY uploaded_at DESC`
+  ).bind(album.id).all<ArchiveUpload>();
+
+  if (uploads.results.length === 0) {
+    return c.json({ error: 'No photos to download' }, 404);
+  }
 
   return createArchiveResponse(c, album.name, uploads.results);
 });
@@ -483,6 +566,7 @@ albumRoutes.put('/:slug', requireAuth, async (c) => {
   const nextWelcomeText = welcome_text !== undefined ? welcome_text : album.welcome_text;
   const nextIsOpen = is_open !== undefined ? (is_open ? 1 : 0) : album.is_open;
   const nextIsViewable = is_viewable !== undefined ? (is_viewable ? 1 : 0) : album.is_viewable;
+  const accessPolicyChanged = nextAccessCode !== album.access_code || nextIsViewable !== album.is_viewable;
 
   await c.env.DB.prepare(
     `UPDATE albums SET
@@ -491,6 +575,7 @@ albumRoutes.put('/:slug', requireAuth, async (c) => {
       is_open = ?,
       is_viewable = ?,
       welcome_text = ?,
+      asset_policy_version = asset_policy_version + ?,
       updated_at = datetime('now')
      WHERE id = ?`
   ).bind(
@@ -499,6 +584,7 @@ albumRoutes.put('/:slug', requireAuth, async (c) => {
     nextIsOpen,
     nextIsViewable,
     nextWelcomeText,
+    accessPolicyChanged ? 1 : 0,
     album.id
   ).run();
 
@@ -508,7 +594,7 @@ albumRoutes.put('/:slug', requireAuth, async (c) => {
 // Upload background image (requires auth + ownership)
 albumRoutes.post('/:slug/background', requireAuth, async (c) => {
   const email = c.get('userEmail');
-  const slug = c.req.param('slug');
+  const slug = c.req.param('slug') as string;
 
   const album = await c.env.DB.prepare(
     'SELECT id, background_key FROM albums WHERE slug = ? AND owner_email = ?'
@@ -524,8 +610,12 @@ albumRoutes.post('/:slug/background', requireAuth, async (c) => {
     return c.json({ error: 'No file provided' }, 400);
   }
 
-  if (!isValidImageType(file.type)) {
-    return c.json({ error: 'Unsupported image type' }, 400);
+  if (!BACKGROUND_IMAGE_TYPES.has(file.type)) {
+    return c.json({ error: 'Please use a JPEG, PNG, WebP, GIF, or AVIF image' }, 400);
+  }
+
+  if (file.size > MAX_BACKGROUND_SIZE) {
+    return c.json({ error: `Image too large. Max ${MAX_BACKGROUND_SIZE / 1024 / 1024}MB` }, 413);
   }
 
   // Delete old background if exists
@@ -541,6 +631,29 @@ albumRoutes.post('/:slug/background', requireAuth, async (c) => {
   await c.env.DB.prepare(
     "UPDATE albums SET background_key = ?, updated_at = datetime('now') WHERE id = ?"
   ).bind(key, album.id).run();
+
+  return c.json({ ok: true, background_url: backgroundUrlFor(slug, key) });
+});
+
+// Remove background image (requires auth + ownership)
+albumRoutes.delete('/:slug/background', requireAuth, async (c) => {
+  const email = c.get('userEmail');
+  const slug = c.req.param('slug') as string;
+
+  const album = await c.env.DB.prepare(
+    'SELECT id, background_key FROM albums WHERE slug = ? AND owner_email = ?'
+  ).bind(slug, email).first<{ id: string; background_key: string | null }>();
+
+  if (!album) {
+    return c.json({ error: 'Album not found or not owned by you' }, 404);
+  }
+
+  if (album.background_key) {
+    await c.env.PHOTOS.delete(album.background_key);
+    await c.env.DB.prepare(
+      "UPDATE albums SET background_key = ?, updated_at = datetime('now') WHERE id = ?"
+    ).bind(null, album.id).run();
+  }
 
   return c.json({ ok: true });
 });
