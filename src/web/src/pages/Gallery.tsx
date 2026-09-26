@@ -51,6 +51,31 @@ export function Gallery() {
   const uploadUrl = `${window.location.origin}/a/${slug}`;
 
   useEffect(() => {
+    const loadPublicGallery = async () => {
+      if (!slug) return;
+      try {
+        const [albumInfo, photosData] = await Promise.all([
+          api.getAlbum(slug),
+          api.getAlbumPhotos(slug),
+        ]);
+
+        if (!albumInfo.is_viewable) {
+          setError('This gallery is not available');
+          return;
+        }
+
+        setPublicAlbum({
+          name: albumInfo.name,
+          asset_token: photosData.asset_token,
+          photos: photosData.photos,
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Gallery not available');
+      } finally {
+        setLoading(false);
+      }
+    };
+
     if (!slug) return;
 
     if (isLoggedIn()) {
@@ -72,31 +97,6 @@ export function Gallery() {
       loadPublicGallery();
     }
   }, [slug]);
-
-  const loadPublicGallery = async () => {
-    if (!slug) return;
-    try {
-      const [albumInfo, photosData] = await Promise.all([
-        api.getAlbum(slug),
-        api.getAlbumPhotos(slug),
-      ]);
-
-      if (!albumInfo.is_viewable) {
-        setError('This gallery is not available');
-        return;
-      }
-
-      setPublicAlbum({
-        name: albumInfo.name,
-        asset_token: photosData.asset_token,
-        photos: photosData.photos,
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Gallery not available');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const handleDelete = async (uploadId: string) => {
     if (!slug) return;
