@@ -4,7 +4,7 @@
   "description": "Simple photo sharing for events",
   "type": "module",
   "engines": {
-    "node": ">=22.12.0"
+    "node": "^22.13.0 || >=24.0.0"
   },
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"wrangler dev\" \"npm --prefix src/web run dev\"",
