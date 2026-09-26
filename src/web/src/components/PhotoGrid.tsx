@@ -145,15 +145,16 @@ export function PhotoGrid({
   });
 
   // Keep the page from scrolling behind the open lightbox
+  const isLightboxOpen = selectedIndex !== null;
   useEffect(() => {
-    if (selectedIndex === null) return;
+    if (!isLightboxOpen) return;
 
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [selectedIndex !== null]);
+  }, [isLightboxOpen]);
 
   useEffect(() => {
     return () => clearAnimationTimeout();

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import {
   convertToJpeg,
@@ -176,11 +176,13 @@ export function FileUploader({ slug, accessCode, onUploadComplete, onBatchComple
     input.value = '';
   };
 
+  const handleNativeSelection = useEffectEvent(() => {
+    if (inputRef.current) handleInputChange(inputRef.current);
+  });
+
   useEffect(() => {
     const input = inputRef.current;
     if (!input) return;
-
-    const handleNativeSelection = () => handleInputChange(input);
 
     input.addEventListener('change', handleNativeSelection);
     input.addEventListener('input', handleNativeSelection);

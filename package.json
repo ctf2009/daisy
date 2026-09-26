@@ -11,6 +11,7 @@
     "dev:api": "wrangler dev",
     "dev:web": "npm --prefix src/web run dev",
     "build": "npm --prefix src/web run build",
+    "lint": "npm --prefix src/web run lint",
     "deploy": "npm run build && wrangler deploy",
     "deploy:prod": "npm run build && wrangler deploy -c wrangler.prod.toml",
     "db:migrate": "wrangler d1 migrations apply daisy --local",
