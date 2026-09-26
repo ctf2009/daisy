@@ -3,6 +3,9 @@
   "version": "1.1.0",
   "description": "Simple photo sharing for events",
   "type": "module",
+  "engines": {
+    "node": "^22.13.0 || >=24.0.0"
+  },
   "scripts": {
     "dev": "concurrently -n api,web -c blue,green \"wrangler dev\" \"npm --prefix src/web run dev\"",
     "dev:api": "wrangler dev",
@@ -22,16 +25,16 @@
     "postinstall": "cd src/web && npm install"
   },
   "dependencies": {
-    "fflate": "^0.8.2",
-    "hono": "^4.12.12",
+    "fflate": "^0.8.3",
+    "hono": "^4.13.9",
     "jose": "^6.2.2"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260413.1",
-    "concurrently": "^9.2.1",
-    "tsx": "^4.21.0",
+    "@cloudflare/workers-types": "^5.20260926.1",
+    "concurrently": "^9.2.4",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.2",
-    "vitest": "^4.1.4",
-    "wrangler": "^4.81.1"
+    "vitest": "^4.1.11",
+    "wrangler": "^4.141.0"
   }
 }
