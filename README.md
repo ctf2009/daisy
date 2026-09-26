@@ -166,7 +166,7 @@ All tokens use HS256 (HMAC-SHA256) signed with `JWT_SECRET`.
 
 ### Prerequisites
 
-- [Node.js](https://nodejs.org/) (v18+)
+- [Node.js](https://nodejs.org/) (v22.12+; Node 24 recommended)
 - A Cloudflare account (free tier works)
 
 ### Setup
