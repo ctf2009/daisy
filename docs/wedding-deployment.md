@@ -2,6 +2,8 @@
 
 The dependency update on 26 September 2026 uses application source `6c52b74` with the patched dependency manifests and lockfiles from `fix/dependabot-2026-09`.
 
+The last deployed maintenance commit is `f973a8b` (Worker version `49985c33-227a-4512-8912-b6285beb9049`). Subsequent lint configuration and React effect cleanup changes are validated in this branch but have not been redeployed.
+
 The old live Worker's application sections were compared with this build: all matched, apart from a compiler-renamed local loop variable in validation. The later guest-access-policy migration is not installed in this instance. Do not deploy newer application code that requires that migration without planning the schema upgrade first.
 
 Deploy this maintenance branch from the `daisy-wedding-dependency-fixes` checkout using the local `wrangler.prod.toml`. It binds only Worker `daisy-api`, database `daisy`, and bucket `daisy-photos`. The separate `daisy-chris` deployment has its own code and configuration.

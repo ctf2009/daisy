@@ -70,7 +70,8 @@ export function Upload() {
   const timersRef = useRef<number[]>([]);
 
   useEffect(() => {
-    return () => timersRef.current.forEach((t) => window.clearTimeout(t));
+    const timers = timersRef.current;
+    return () => timers.forEach((t) => window.clearTimeout(t));
   }, []);
 
   // When every photo in a batch lands, give the uploader a moment to see
@@ -90,7 +91,9 @@ export function Upload() {
       const res = await api.getAlbumPhotos(slug, accessCode);
       setPhotos(res.photos);
       setAssetToken(res.asset_token);
-    } catch {}
+    } catch {
+      // Keep the current gallery visible if a background refresh fails.
+    }
   };
 
   useEffect(() => {

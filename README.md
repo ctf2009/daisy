@@ -201,6 +201,7 @@ JWT_SECRET=local-dev-secret-change-in-production
 | `npm run dev:api` | Start API only |
 | `npm run dev:web` | Start frontend only |
 | `npm run build` | Build frontend into `dist/web/` |
+| `npm run lint` | Check frontend, tests, and build configuration with ESLint; warnings fail the check |
 | `npm run db:migrate` | Apply local D1 migrations |
 | `npm run db:migrate:remote` | Apply remote D1 migrations |
 | `npm test` | Run worker tests |
