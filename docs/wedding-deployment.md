@@ -13,4 +13,4 @@ npm run build
 npx wrangler deploy -c wrangler.prod.toml
 ```
 
-The wedding album `thomas-and-caseys-wedding-634e33` is read-only (`is_open=0`, `is_viewable=1`) at the user's request. Its 587 photo records were preserved. No database migration or photo modification is part of this dependency deployment.
+The wedding album `thomas-and-caseys-wedding-634e33` is read-only (`is_open=0`, `is_viewable=1`) at the user's request. All 587 upload records were preserved: 581 completed photos and six unfinished uploads dating from July. No database migration or photo modification is part of this dependency deployment.
